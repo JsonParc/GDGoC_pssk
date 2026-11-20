@@ -101,3 +101,17 @@ test('rain pools in a bowl up to its rim and drains off a slope', async () => {
   assert.equal(depthBin(.7), 4);
   assert.equal(depthBin(5), 6);
 });
+
+test('rain floods each neighbourhood low spot to the formula depth, shallower uphill, never tens of metres', async () => {
+  const { localPooling } = await import('../korea/disasters/flood-grid.js');
+  // 9×9 비탈: 동쪽으로 칸마다 0.5 m씩 높아짐, 가운데 한 칸만 깊은 골(−20 m)
+  const N = 9, H = Float64Array.from({ length: N * N }, (_, k) => (k % N) * .5);
+  H[4 * N + 4] = -20;
+  const d = localPooling(N, H, 2, 1.4);
+  assert.equal(d[4 * N + 4], 1.4);            // 골 바닥은 공식 깊이까지
+  assert.equal(d[4 * N + 6], 0);              // 골에서 2칸 떨어진 곳은 골보다 21 m 높아 안 잠김
+  assert.ok(Math.abs(d[0 * N + 1] - .9) < 1e-9); // 비탈: 2칸 안 가장 낮은 곳(0 m)보다 0.5 m 높으면 0.9 m
+  assert.ok(Math.max(...d) <= 1.4);
+  const ex = new Uint8Array(N * N); ex[4 * N + 4] = 1; // 바다 등 제외 칸
+  assert.equal(localPooling(N, H, 2, 1.4, ex)[4 * N + 4], 0);
+});

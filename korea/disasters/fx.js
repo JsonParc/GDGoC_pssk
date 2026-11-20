@@ -14,7 +14,7 @@ import { getElevation } from '../dem.js';
 import { createBuildingFX } from './buildings.js';
 import { createWaterLayer } from './water.js';
 import { createCloudLayer } from './clouds.js';
-import { floodFill, floodDistance, depressionDepth, depthBin, DEPTH_BINS } from './flood-grid.js';
+import { floodFill, floodDistance, depressionDepth, localPooling, depthBin, DEPTH_BINS } from './flood-grid.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v)), lerp = (a, b, t) => a + (b - a) * t, sm = x => x * x * (3 - 2 * x);
 const smoothstep01 = (a, b, x) => sm(clamp((x - a) / (b - a), 0, 1));
@@ -281,7 +281,8 @@ function createShared(viewer, Cesium) {
     const k = .05;
     for (const key of ['vis', 'tintAmt', 'gloom', 'heat', 'rain', 'snow', 'cover', 'wet', 'wind']) cur[key] = lerp(cur[key] ?? 0, look[key], key === 'cover' || key === 'wet' ? .08 : k);
     cur.dir = look.dir; Cesium.Cartesian3.lerp(cur.tint, look.tint, k, cur.tint);
-    stages.atmos.enabled = wx() > 0 && (visEff() < 39000 || cur.gloom > .01 || cur.tintAmt > .01 || cur.heat > .01);
+    stages.atmos.enabled = !opt.depthMap && wx() > 0 && // 물 깊이 히트맵을 보는 동안은 안개 · 어둠을 꺼서 색이 또렷하게
+       (visEff() < 39000 || cur.gloom > .01 || cur.tintAmt > .01 || cur.heat > .01);
     stages.shake.enabled = Math.abs(shake.x) + Math.abs(shake.y) + Math.abs(shake.z) > 1e-5;
     if (C) { C.tick(time()); here = C.precipHere(); }
     stages.rain.enabled = screenPrecip('rain') > .01; stages.snow.enabled = screenPrecip('snow') > .01; setGround(cur.cover, cur.wet);
@@ -464,17 +465,69 @@ function createShared(viewer, Cesium) {
     // 물 깊이 색 (형광 히트맵, 켜고 끌 수 있음): 잠긴 칸마다 깊이(수위 − 지형)를 부드럽게 이어 지형에 덮음(depthLayer).
     // 켜 있는 동안 물판은 숨김 (불투명한 물판이 지형 위 색을 가려서)
     let heat = null, heatOn = false;
-    out.setDepthMap = level => {
+    out.setDepthMap = (level, mode = '침수') => {
       heat?.destroy(); heat = null; heatOn = Number.isFinite(level);
       prim.show = !heatOn && lastH !== null && Number.isFinite(lastH);
       if (!heatOn) return;
       const D = new Float32Array(N * N).fill(NaN);
       for (let k = 0; k < N * N; k++) if (fill[k] && !sea[k] && Number.isFinite(H[k])) D[k] = level - H[k];
-      heat = depthLayer({ enu, half, N, depth: D });
+      heat = depthLayer({ enu, half, N, depth: D, mode });
     };
     const removeWater = out.destroy;
     out.destroy = () => { out.setDepthMap(null); removeWater(); };
     out.ground = H[(N >> 1) * N + (N >> 1)];
+    return out;
+  }
+
+  /* 호우 침수 물 면: 칸마다 동네(반경 약 600 m)의 가장 낮은 땅 + maxDepth 수위까지 참(flood-grid.js localPooling).
+     수위가 칸마다 달라 평평한 판 대신, 칸 모서리마다 둘레 잠긴 칸 수위의 평균으로 이은 부드러운 물 면 (지형보다 낮은 곳은 지형이 가림) */
+  async function rainSurface({ longitude, latitude, half = 4000, N = 128, maxDepth, color }) {
+    const enu = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(longitude, latitude));
+    const at = (x, y) => Cesium.Cartographic.fromCartesian(Cesium.Matrix4.multiplyByPoint(enu, new Cesium.Cartesian3(x, y, 0), new Cesium.Cartesian3()));
+    const cell = 2 * half / N, cartos = [];
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) cartos.push(at((i + .5) * cell - half, (j + .5) * cell - half));
+    const H = await sampleHeights(cartos), seaH = seaN ?? 0, sea = new Uint8Array(N * N);
+    for (let k = 0; k < N * N; k++) if (H[k] <= seaH + .3) sea[k] = 1; // 바다는 지도 바다가 맡음
+    const D = localPooling(N, H, Math.max(2, Math.round(600 / cell)), maxDepth, sea);
+    const wet = k => D[k] >= .02;
+    const out = { count: 0, setHeight() {}, setReach() {}, setDepthMap() {}, destroy() {} };
+    // 모서리 (N+1)²: 둘레 잠긴 칸들의 수면(H + D) 평균
+    const M = N + 1, corner = new Float64Array(M * M).fill(NaN);
+    for (let cj = 0; cj < M; cj++) for (let ci = 0; ci < M; ci++) {
+      let sum = 0, n = 0;
+      for (const [i, j] of [[ci - 1, cj - 1], [ci, cj - 1], [ci - 1, cj], [ci, cj]]) {
+        if (i < 0 || j < 0 || i >= N || j >= N) continue;
+        const k = j * N + i;
+        if (wet(k)) { sum += H[k] + D[k]; n++; }
+      }
+      if (n) corner[cj * M + ci] = sum / n;
+    }
+    const cells = []; for (let k = 0; k < N * N; k++) if (wet(k)) cells.push(k);
+    out.count = cells.length;
+    if (!cells.length) return out;
+    const pos = new Float64Array(cells.length * 12), st = new Float32Array(cells.length * 8), idx = new Uint32Array(cells.length * 6);
+    cells.forEach((k, q) => {
+      const i = k % N, j = (k - i) / N;
+      [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]].forEach(([ci, cj], v) => {
+        const c = at(ci * cell - half, cj * cell - half), p0 = Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, corner[cj * M + ci]);
+        pos.set([p0.x, p0.y, p0.z], (q * 4 + v) * 3); st.set([ci / N, cj / N], (q * 4 + v) * 2);
+      });
+      idx.set([q * 4, q * 4 + 1, q * 4 + 2, q * 4, q * 4 + 2, q * 4 + 3], q * 6);
+    });
+    const prim = scene.primitives.add(new Cesium.Primitive({ asynchronous: false, compressVertices: false,
+      geometryInstances: new Cesium.GeometryInstance({ geometry: new Cesium.Geometry({
+        attributes: { position: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
+          st: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 2, values: st }) },
+        indices: idx, primitiveType: Cesium.PrimitiveType.TRIANGLES, boundingSphere: Cesium.BoundingSphere.fromVertices(pos) }) }),
+      appearance: new Cesium.EllipsoidSurfaceAppearance({ aboveGround: true, translucent: false, material: Cesium.Material.fromType('Water', {
+        baseWaterColor: color, blendColor: Cesium.Color.fromAlpha(color, 1), normalMap: Cesium.buildModuleUrl('Assets/Textures/waterNormals.jpg'),
+        frequency: 5000, animationSpeed: .015, amplitude: 4, specularIntensity: .7 }) }) }));
+    let heat = null;
+    out.setDepthMap = on => { // 켜 있는 동안 물 면은 숨김 (불투명한 물이 지형 위 색을 가려서)
+      heat?.destroy(); heat = null; prim.show = !on;
+      if (on) heat = depthLayer({ enu, half, N, depth: Float32Array.from(D, (v, k) => wet(k) ? v : NaN), mode: '침수 (동네마다 낮은 곳에 모임)' });
+    };
+    out.destroy = () => { out.setDepthMap(false); scene.primitives.remove(prim); };
     return out;
   }
 
@@ -489,7 +542,8 @@ function createShared(viewer, Cesium) {
     const H = await sampleHeights(cartos), dep = depressionDepth(N, H), seaH = seaN ?? 0, D = new Float32Array(N * N).fill(NaN);
     let cells = 0;
     for (let k = 0; k < N * N; k++) if (H[k] > seaH + .3 && depthBin(Math.min(dep[k], cap)) >= 0) { D[k] = Math.min(dep[k], cap); cells++; } // 바다 · 높이 모르는 칸 제외
-    const layer = cells ? depthLayer({ enu, half, N, depth: D }) : null;
+    const layer = cells ? depthLayer({ enu, half, N, depth: D, mode: '빗물이 고이는 곳' }) : null;
+    if (!cells) dispatchEvent(new CustomEvent('map-depth-stats', { detail: { mode: '빗물이 고이는 곳', max: 0, areaKm2: 0 } }));
     return { cells, destroy() { layer?.destroy(); } };
   }
 
@@ -497,7 +551,7 @@ function createShared(viewer, Cesium) {
      칸 깊이를 scale배로 쌍선형 보간해 픽셀마다 구간 색을 칠하고, 물이 있는 칸(마스크)도 보간해 0.5에서 잘라 경계를 둥글게.
      지형 위 영상이라 기복을 따라 붙고 보는 각도와 상관없음. 동 · 북 격자를 경위도 사각형에 펴서 씀 (수 km라 회전 차이 무시) */
   const effectLayers = new Set();
-  function depthLayer({ enu, half, N, depth, scale = Math.max(4, Math.round(768 / N)) }) { // 그림 약 768 px 한 변
+  function depthLayer({ enu, half, N, depth, mode = '', scale = Math.max(4, Math.round(768 / N)) }) { // 그림 약 768 px 한 변
     const W = N * scale, canvas = document.createElement('canvas'); canvas.width = canvas.height = W;
     const g = canvas.getContext('2d'), img = g.createImageData(W, W), px = img.data;
     const colors = DEPTH_BINS.map(([, css], b) => { const c = Cesium.Color.fromCssColorString(css); return [c.red * 255, c.green * 255, c.blue * 255, (.55 + b * .05) * 255]; });
@@ -534,8 +588,14 @@ function createShared(viewer, Cesium) {
     const sw = at(-half, -half), ne = at(half, half);
     const layer = viewer.imageryLayers.addImageryProvider(new Cesium.SingleTileImageryProvider({
       url: canvas.toDataURL('image/png'), rectangle: new Cesium.Rectangle(sw.longitude, sw.latitude, ne.longitude, ne.latitude) }));
+    // 형광처럼 보이게: 이 층만 밝고 진하게 (지구 조명 · 비 오는 날 어둠에 묻히지 않게)
+    layer.brightness = 1.7; layer.saturation = 1.6; layer.contrast = 1.1;
     effectLayers.add(layer);
-    return { layer, destroy() { effectLayers.delete(layer); viewer.imageryLayers.remove(layer, true); } };
+    // 범례 창(depth-legend.js)에 최대 깊이 · 잠긴 넓이
+    let max = 0, cells = 0;
+    for (const v of depth) if (Number.isFinite(v) && depthBin(v) >= 0) { cells++; if (v > max) max = v; }
+    dispatchEvent(new CustomEvent('map-depth-stats', { detail: { mode, max, areaKm2: cells * (2 * half / N) ** 2 / 1e6 } }));
+    return { layer, destroy() { effectLayers.delete(layer); viewer.imageryLayers.remove(layer, true); dispatchEvent(new CustomEvent('map-depth-stats', { detail: null })); } };
   }
 
   /* 땅 위 선: 브이월드 Cesium 빌드에는 땅에 붙는 선(clampToGround)용 작업 파일(createGroundPolylineGeometry)이 없어
@@ -586,7 +646,7 @@ function createShared(viewer, Cesium) {
     return out;
   };
 
-  return { C, opt, shake, groundLine, floodSurface, pondingMap, look, cur, setSky, get sky() { return sky.id; }, W, get camH() { return camH; }, setLook, seaLevelAt, get seaLevel() { return seaN; }, water, setOcean, set seaRise(v) { seaRise = v; }, tickers, time, simTime, setPaused, get paused() { return pausedAt != null; }, ringPositions };
+  return { C, opt, shake, groundLine, floodSurface, rainSurface, pondingMap, look, cur, setSky, get sky() { return sky.id; }, W, get camH() { return camH; }, setLook, seaLevelAt, get seaLevel() { return seaN; }, water, setOcean, set seaRise(v) { seaRise = v; }, tickers, time, simTime, setPaused, get paused() { return pausedAt != null; }, ringPositions };
 }
 
 /* ───── 재난별 효과 ───── */
@@ -620,15 +680,20 @@ function createEffect(type, ctx, S) {
   const baseH = () => p.waterBase === 'point' && type !== 'tsunami' ? groundHeight : sea;
   const tsAmp = () => p.height * p.runup + (p.waterBase === 'point' ? Math.max(0, groundHeight - sea) : 0);
   const waterAmount = () => type === 'tsunami' ? tsAmp() : (env.water || 0);
+  // 호우(그린 영역 · 기사 침수 깊이 없음): 동네마다 가장 낮은 곳이 간이 공식 저지대 침수 깊이(env.water)만큼 잠기고 높아질수록 얕아짐 (rainSurface).
+  // 예전엔 '선택 지점 지면 + 공식 깊이' 한 수위로 그보다 낮은 땅을 다 채워, 하천변 같은 낮은 곳이 수 m씩 잠겼음
+  const rainMode = () => type === 'flood' && !p.polygon && p.waterDepthM == null;
+  const level = () => rainMode() ? null : baseH() + waterAmount();
   async function buildWater() {
     const req = ++waterReq;
     let w;
     if (type === 'flood' && p.polygon) w = S.water({ longitude, latitude, ...waterSpec, polygon: p.polygon }); // 직접 그린 영역
+    else if (rainMode()) w = await S.rainSurface({ longitude, latitude, maxDepth: waterAmount(), color: waterSpec.color });
     else w = await S.floodSurface({ longitude, latitude, half: type === 'flood' ? 4000 : 9000, base: type === 'tsunami' ? 'sea' : p.waterBase, maxLevel: baseH() + waterAmount() + .01, color: waterSpec.color, flow: type === 'tsunami' });
     if (req !== waterReq || !alive) { w.destroy(); return; }
     if (water) water.destroy(); water = w; waterGen++;
     if (type === 'tsunami') water.setReach(tsReach);
-    if (type !== 'tsunami') water.setHeight(baseH() + waterAmount());
+    else if (Number.isFinite(level())) { water.setHeight(level()); if (bReady) B.water(level(), false); }
   }
   // 물이 거의 없으면(2 cm 미만) 물판을 만들지 않음: 깊이 0으로 만들면 기준 지면보다 조금이라도 낮은 땅이 다 잠겨 보였음 (배수 능력 안의 비 등).
   // 그때는 젖은 노면 · 웅덩이(setGround의 wet)만
@@ -636,7 +701,7 @@ function createEffect(type, ctx, S) {
   function scheduleWater() {
     if (!waterSpec) return;
     if (dry()) { waterKey = ''; waterReq++; clearTimeout(waterTimer); if (water) { water.destroy(); water = null; } return; }
-    const key = [p.waterBase, (baseH() + waterAmount()).toFixed(1), p.polygon ? p.polygon.length : 0, sea].join('|');
+    const key = rainMode() ? ['rain', waterAmount().toFixed(2), sea].join('|') : [p.waterBase, (baseH() + waterAmount()).toFixed(1), p.polygon ? p.polygon.length : 0, sea].join('|');
     if (key === waterKey) return; waterKey = key;
     clearTimeout(waterTimer); waterTimer = setTimeout(buildWater, 350); // 슬라이더를 끄는 동안은 기다렸다가 한 번
   }
@@ -648,13 +713,14 @@ function createEffect(type, ctx, S) {
     const on = !!S.opt.depthMap && !!waterSpec && !(type === 'flood' && p.polygon);
     const rainy = type === 'flood' || type === 'typhoon';
     const cap = rainy ? +(.03 + .12 * (S.look.wet || 0)).toFixed(2) : 0; // 고이는 깊이 한도: 젖음 정도에 따라 3~15 cm
-    const level = baseH() + waterAmount();
-    const key = !on ? '' : dry() ? (rainy ? `pond|${cap}` : 'none') : `lv|${level.toFixed(2)}|${waterGen}`;
+    const lv = level();
+    const key = !on ? '' : dry() ? (rainy ? `pond|${cap}` : 'none') : rainMode() ? `rain|${waterGen}` : Number.isFinite(lv) ? `lv|${lv.toFixed(2)}|${waterGen}` : 'none';
     if (key === depthKey) return;
     depthKey = key;
     water?.setDepthMap?.(null); ponds?.destroy(); ponds = null; pondReq++;
     if (!key || key === 'none') return;
-    if (key.startsWith('lv')) { water?.setDepthMap?.(level); return; }
+    if (key.startsWith('rain')) { water?.setDepthMap?.(true); return; }
+    if (key.startsWith('lv')) { water?.setDepthMap?.(lv, type === 'tsunami' ? '해일 최대 침수' : '침수'); return; }
     const req = pondReq;
     S.pondingMap({ longitude, latitude, cap }).then(m => { if (req !== pondReq || !alive) m.destroy(); else ponds = m; }).catch(e => console.warn('고이는 곳', e));
   }
@@ -697,7 +763,7 @@ function createEffect(type, ctx, S) {
     const rainNow = type === 'flood' || type === 'typhoon' ? p.rain || 0 : 0, drainCap = type === 'flood' ? Math.max(p.drain, 1) : 40;
     S.look.wet = rainNow > 0 ? clamp(.25 + .75 * Math.min(1, rainNow / drainCap) * Math.min(1, (p.hours || 2) / 2), 0, 1) : 0;
     if (waterSpec) {
-      if (type !== 'tsunami' && !dry()) { const lv = baseH() + waterAmount(); if (water) water.setHeight(lv); if (bReady) B.water(lv, false); }
+      if (type !== 'tsunami' && !dry()) { const lv = level(); if (Number.isFinite(lv)) { if (water) water.setHeight(lv); if (bReady) B.water(lv, false); } }
       scheduleWater();
     }
     // 지도 바다 표면도 같이 올림: 해수면 상승(+ 폭풍해일) · 태풍 폭풍해일 (해일은 아래 tick에서 매 프레임)

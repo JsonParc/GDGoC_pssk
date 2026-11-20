@@ -105,3 +105,24 @@ export function depthBin(d) {
   for (let b = 0; b < DEPTH_BINS.length; b++) if (d >= DEPTH_BINS[b][0]) bin = b;
   return bin;
 }
+
+/* 동네 단위 빗물 고임 (호우 침수): 칸마다 반경 r칸 안에서 가장 낮은 땅을 기준으로, 그보다 maxDepth만큼 높은 수위까지 참.
+   → 동네마다 가장 낮은 곳이 maxDepth(간이 공식 저지대 침수 깊이)만큼 잠기고, 높아질수록 얕아짐. 영역 전체 물을 가장 낮은 한 곳
+   (하천 골짜기 등)에 모으면 수십 m로 깊어져서 이렇게 함. 높이를 모르는 칸 · 제외 칸(exclude)은 0 */
+export function localPooling(N, H, r, maxDepth, exclude = null) {
+  const INF = Infinity, rowMin = new Float64Array(N * N), lowest = new Float64Array(N * N), depth = new Float64Array(N * N);
+  const h = k => Number.isFinite(H[k]) && !(exclude && exclude[k]) ? H[k] : INF;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { // 가로 최솟값 (단순 창, N · r이 작아 충분)
+    let m = INF; for (let a = Math.max(0, i - r); a <= Math.min(N - 1, i + r); a++) m = Math.min(m, h(j * N + a));
+    rowMin[j * N + i] = m;
+  }
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { // 세로
+    let m = INF; for (let b = Math.max(0, j - r); b <= Math.min(N - 1, j + r); b++) m = Math.min(m, rowMin[b * N + i]);
+    lowest[j * N + i] = m;
+  }
+  for (let k = 0; k < N * N; k++) {
+    const v = h(k);
+    depth[k] = Number.isFinite(v) && Number.isFinite(lowest[k]) ? Math.max(0, maxDepth - (v - lowest[k])) : 0;
+  }
+  return depth;
+}
