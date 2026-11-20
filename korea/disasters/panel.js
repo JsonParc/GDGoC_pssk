@@ -121,6 +121,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
           <button type="button" id="dx-draw" hidden>영역 그리기</button><button type="button" id="dx-draw-done" hidden>완료</button><button type="button" id="dx-draw-cancel" hidden>취소</button><button type="button" id="dx-draw-clear" hidden>영역 지우기</button></div>
         <p class="note" id="dx-draw-note" hidden></p>
         <div class="group" id="dx-base-row" hidden><h3>물 기준</h3><select id="dx-base" aria-label="물 기준"><option value="sea">근처 해수면 기준</option><option value="point">선택 지점 지면 기준</option></select>
+          <p class="note" id="dx-base-note" hidden></p>
         </div>
         <div class="group"><h3>입력값</h3><div id="dx-params"></div></div>
         <div class="group"><h3>추정치 <span class="tag">간이 공식</span></h3><dl id="dx-out"></dl></div>
@@ -138,7 +139,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
         <p class="note">물 데이터 © OpenMapTiles · © OpenStreetMap contributors</p>
       </div>
     </div>
-    <div class="btns actions" id="dx-actions"><button type="button" class="primary" id="dx-apply">적용</button><button type="button" id="dx-stop">끄기</button></div>`;
+    <div class="btns actions" id="dx-actions"><button type="button" class="primary" id="dx-apply">적용</button><button type="button" id="dx-pause" hidden aria-pressed="false" title="쌓임 · 번짐 · 파도 진행만 멈춤 (눈 · 비는 계속 내림)">⏸ 멈춤</button><button type="button" id="dx-stop">끄기</button></div>`;
   const opener = document.createElement('button'); opener.id = 'dx-open'; opener.type = 'button';
   opener.innerHTML = '재난 · 기후변화 <span aria-hidden="true">›</span>'; opener.classList.add('closed');
   const tapHint = document.createElement('div'); tapHint.id = 'dx-tap-hint'; tapHint.hidden = true;
@@ -176,6 +177,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
   let activeCard = null, runRequest = null;
   let automaticSky = null, previousSky = null;
   // 재난 → 하늘 템플릿 (템플릿 뷰어의 하늘 사진). 지진 · 해일은 하늘을 바꾸지 않음
+  const TIMELAPSE = ['snow', 'wildfire', 'tsunami', 'quake']; // 진행 멈춤 버튼을 보이는 재난
   const DISASTER_SKY = { typhoon: 'thunder-storm', flood: 'slate-overcast', snow: 'blizzard-gray', heatwave: 'golden-dusk', wildfire: 'amber-dawn', sealevel: 'cumulus-blue', tsunami: 'sea-fog' };
   const defaults = t => Object.fromEntries(TYPES[t].params.map(q => [q.key, q.value]));
   params = defaults(type);
@@ -199,7 +201,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
   async function start(card = null) {
     const at = site || centerSite();
     if (!at) { $('dx-site').textContent = '지도를 클릭해 발생 지점을 고르세요.'; return; }
-    stopTapHint();
+    stopTapHint(); S.setPaused?.(false); // 새로 적용하면 진행 멈춤 풀림
     for (const t of Object.keys(TYPES)) if (t !== type) disasters.stop(t);
     const request = {};
     runRequest = request;
@@ -226,7 +228,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
     return true;
   }
   function stop() {
-    runRequest = null;
+    runRequest = null; S.setPaused?.(false);
     for (const t of Object.keys(TYPES)) disasters.stop(t);
     if (automaticSky && S.sky === automaticSky) api.sky(previousSky);
     automaticSky = null;
@@ -318,15 +320,24 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
     for (const [k, v] of t.derive(params)) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = k; dd.textContent = v; $('dx-out').append(dt, dd); }
     if (document.activeElement !== $('dx-json')) $('dx-json').value = JSON.stringify(data == null ? { type, params } : { type, params, data }, null, 2);
     $('dx-apply').textContent = running === type ? '다시 적용' : '적용';
-    const WATERY = ['typhoon', 'sealevel', 'flood']; // 해일은 늘 바다에서 들어와 물 기준을 고르지 않음
+    // 진행 멈춤: 시간에 따라 진행하는 재난만 (대설 쌓임 · 산불 번짐 · 해일 파도 · 지진 흔들림)
+    $('dx-pause').hidden = !(running === type && TIMELAPSE.includes(type));
+    $('dx-pause').textContent = S.paused ? '▶ 이어서' : '⏸ 멈춤';
+    $('dx-pause').setAttribute('aria-pressed', String(S.paused));
+    const WATERY = ['typhoon', 'tsunami', 'sealevel', 'flood']; // 해일은 기준과 상관없이 바다에서 밀려 들어옴 (기준은 수위만 정함)
     $('dx-base-row').hidden = !WATERY.includes(type) || (type === 'flood' && !!params.polygon);
     $('dx-base').value = params.waterBase || (type === 'flood' ? 'point' : 'sea');
+    $('dx-base-note').hidden = type !== 'tsunami';
+    $('dx-base-note').textContent = type !== 'tsunami' ? ''
+      : $('dx-base').value === 'point' ? '바다에서 밀려 들어와, 가장 높을 때 선택 지점이 파고 × 처오름만큼 잠깁니다.'
+      : '바다에서 밀려 들어와, 해안 수위가 파고 × 처오름만큼 오릅니다.';
     const canDraw = DRAWABLE.includes(type);
     $('dx-draw').hidden = !canDraw || drawing; $('dx-draw-done').hidden = !drawing; $('dx-draw-cancel').hidden = !drawing; $('dx-draw-clear').hidden = !canDraw || !params.polygon || drawing;
     const areaIn = root.querySelector('#dx-p-area');
     if (areaIn) { const locked = !!params.polygon; areaIn.disabled = locked; root.querySelector('#dx-r-area').disabled = locked; areaIn.title = locked ? '그린 영역의 면적' : ''; }
   }
   $('dx-apply').onclick = () => start(); $('dx-stop').onclick = stop;
+  $('dx-pause').onclick = () => { S.setPaused?.(!S.paused); render(); };
   $('dx-base').onchange = e => { params.waterBase = e.target.value; if (running === type) disasters.setParams(type, { ...params }); render(); };
   $('dx-json-apply').onclick = () => {
     try { const j = JSON.parse($('dx-json').value); if (!TYPES[j.type] || j.type === 'none') throw new Error('type 오류'); api.set(j.type, j.params, j.site, j.data); }

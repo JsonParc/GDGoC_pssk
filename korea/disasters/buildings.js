@@ -48,6 +48,7 @@ const VS = `
       v_burn = inF*smoothstep(.0, .25, dd)*mix(.55, 1., r2);
     }
     v_dmg = dmg; v_h = h; v_r = r1;
+    v_upEC = (czm_view*vec4(up, 0.)).xyz;                                // 지붕 눈: 위 방향 (눈 좌표)
     vsOutput.positionMC += (czm_inverseModelView*vec4((czm_view*vec4(off, 0.)).xyz, 0.)).xyz;
   }`;
 const FS = `
@@ -56,6 +57,11 @@ const FS = `
     c = mix(c, c*vec3(.55, .5, .42) + vec3(.06, .05, .03), v_wet*.75);      // 젖은 흙탕 자국
     c = mix(c, vec3(.45, .42, .38), v_dmg*.7);                            // 부서짐 · 먼지
     c = mix(c, vec3(.07, .06, .055), v_burn*.85);                         // 그을림
+    if (u_snow > 0.) {                                                    // 쌓인 눈: 위를 보는 면(지붕 · 옥상)만, 벽은 그대로
+      float roof = smoothstep(.55, .85, dot(normalize(fsInput.attributes.normalEC), normalize(v_upEC)));
+      float lum = dot(c, vec3(.299, .587, .114));                        // 원래 지붕 무늬(실외기 · 난간 그림자)를 조금 남김
+      c = mix(c, vec3(.86, .88, .93)*mix(.82, 1.04, lum), roof*clamp(u_snow*1.2, 0., 1.)*mix(.72, .9, v_r));
+    }
     material.diffuse = c;
     if (v_fire > 0.) {
       // 몇몇 층(3.5 m 간격)에서 불길: 층 · 건물마다 다르게 깜빡임
@@ -77,9 +83,9 @@ export function createBuildingFX(viewer, Cesium) {
       u_qOn: { type: U.FLOAT, value: 0 }, u_t: { type: U.FLOAT, value: 0 }, u_env: { type: U.FLOAT, value: 0 }, u_M: { type: U.FLOAT, value: 6 },
       u_depth: { type: U.FLOAT, value: 10 }, u_dur: { type: U.FLOAT, value: 10 }, u_exag: { type: U.FLOAT, value: 10 },
       u_wOn: { type: U.FLOAT, value: 0 }, u_wMax: { type: U.FLOAT, value: -1e4 }, u_wTsu: { type: U.FLOAT, value: 0 },
-      u_fOn: { type: U.FLOAT, value: 0 }, u_fRel: { type: U.SAMPLER_2D, value: blank }, u_fBox: { type: U.VEC4, value: new Cesium.Cartesian4(0, 0, 1, 1) }, u_fG: { type: U.FLOAT, value: 0 },
+      u_fOn: { type: U.FLOAT, value: 0 }, u_fRel: { type: U.SAMPLER_2D, value: blank }, u_fBox: { type: U.VEC4, value: new Cesium.Cartesian4(0, 0, 1, 1) }, u_fG: { type: U.FLOAT, value: 0 }, u_snow: { type: U.FLOAT, value: 0 },
     },
-    varyings: { v_dmg: Cesium.VaryingType.FLOAT, v_wet: Cesium.VaryingType.FLOAT, v_burn: Cesium.VaryingType.FLOAT, v_fire: Cesium.VaryingType.FLOAT, v_h: Cesium.VaryingType.FLOAT, v_r: Cesium.VaryingType.FLOAT },
+    varyings: { v_dmg: Cesium.VaryingType.FLOAT, v_wet: Cesium.VaryingType.FLOAT, v_burn: Cesium.VaryingType.FLOAT, v_fire: Cesium.VaryingType.FLOAT, v_h: Cesium.VaryingType.FLOAT, v_r: Cesium.VaryingType.FLOAT, v_upEC: Cesium.VaryingType.VEC3 },
     vertexShaderText: VS, fragmentShaderText: FS,
   });
   let sets = [], users = 0, enu = null, originH = 0;
@@ -118,7 +124,7 @@ export function createBuildingFX(viewer, Cesium) {
 
   return {
     async begin(longitude, latitude, half) { users++; if (users === 1) attach(); else sets = tilesets().map(t => (t.customShader = shader, t)); await setArea(longitude, latitude, half); },
-    end() { users = Math.max(0, users - 1); set('u_qOn', 0); set('u_wOn', 0); set('u_fOn', 0); if (!users) detach(); },
+    end() { users = Math.max(0, users - 1); set('u_qOn', 0); set('u_wOn', 0); set('u_fOn', 0); set('u_snow', 0); if (!users) detach(); },
     quake(o) { set('u_qOn', 1); set('u_t', o.t); set('u_env', o.env); set('u_M', o.M); set('u_depth', o.depth); set('u_dur', o.dur); set('u_exag', o.exag); },
     water(maxEllipsoidHeight, tsunami) { set('u_wOn', 1); set('u_wMax', zOf(maxEllipsoidHeight)); set('u_wTsu', tsunami ? 1 : 0); },
     // rel: Float(0~1, 영역 밖 1.5) n×n 격자 (동 · 북 m 범위 box = [minX, minY, sizeX, sizeY]), g: 지금 번진 정도
@@ -128,5 +134,6 @@ export function createBuildingFX(viewer, Cesium) {
       set('u_fBox', new Cesium.Cartesian4(...box)); set('u_fOn', 1);
     },
     fire(g) { set('u_fG', g); },
+    snow(cover) { set('u_snow', cover); },
   };
 }

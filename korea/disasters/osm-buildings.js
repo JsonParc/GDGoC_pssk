@@ -8,12 +8,36 @@ const Pbf = PbfNS.default || PbfNS;
 const VectorTile = VTNS.VectorTile || (VTNS.default && VTNS.default.VectorTile);
 const TILEJSON = 'https://tiles.openfreemap.org/planet', Z = 14;
 
+/* 지붕 눈: PerInstanceColorAppearance와 같은 꼭짓점 셰이더 + 위를 보는 면(지붕 · 옥상)만 눈 색으로 섞는 조각 셰이더.
+   덮임 정도는 재질 하나(cover)로 모든 타일이 같이 씀 (fx.js가 'map-snow-cover' 이벤트로 알려 줌) */
+const ROOF_VS = `attribute vec3 position3DHigh; attribute vec3 position3DLow; attribute vec3 normal; attribute vec4 color; attribute float batchId;
+  varying vec3 v_positionEC; varying vec3 v_normalEC; varying vec4 v_color;
+  void main(){ vec4 p = czm_computePosition(); v_positionEC = (czm_modelViewRelativeToEye*p).xyz; v_normalEC = czm_normal*normal; v_color = color;
+    gl_Position = czm_modelViewProjectionRelativeToEye*p; }`;
+const ROOF_FS = `varying vec3 v_positionEC; varying vec3 v_normalEC; varying vec4 v_color;
+  void main(){
+    vec3 toEye = -v_positionEC, n = normalize(v_normalEC);
+    czm_materialInput mi; mi.normalEC = n; mi.positionToEyeEC = toEye;
+    float cover = czm_getMaterial(mi).alpha;
+    vec4 c = czm_gammaCorrect(v_color);
+    vec3 upEC = normalize((czm_view*vec4(normalize((czm_inverseView*vec4(v_positionEC, 1.)).xyz), 0.)).xyz);
+    float roof = smoothstep(.75, .95, dot(n, upEC));
+    c.rgb = mix(c.rgb, vec3(.88, .9, .95), roof*clamp(cover*1.2, 0., 1.)*.88);
+    czm_material m = czm_getDefaultMaterial(mi); m.diffuse = c.rgb; m.alpha = c.a;
+    gl_FragColor = czm_phong(normalize(toEye), m, czm_lightDirectionEC);
+  }`;
+
 export function createOsmBuildings(viewer, Cesium) {
   const scene = viewer.scene, tiles = new Map();
   let template = null;
   const getTemplate = () => (template ??= fetch(TILEJSON).then(r => r.json()).then(j => j.tiles[0]));
   const lon2x = lon => Math.floor((lon + 180) / 360 * 2 ** Z);
   const lat2y = lat => { const r = lat * Math.PI / 180; return Math.floor((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2 * 2 ** Z); };
+  const roofSnow = new Cesium.Material({ fabric: { type: 'OsmRoofSnow', uniforms: { cover: 0 },
+    source: 'czm_material czm_getMaterial(czm_materialInput mi){ czm_material m = czm_getDefaultMaterial(mi); m.alpha = cover; return m; }' } });
+  const appearance = () => new Cesium.Appearance({ material: roofSnow, translucent: false, closed: true, vertexShaderSource: ROOF_VS, fragmentShaderSource: ROOF_FS,
+    renderState: Cesium.Appearance.getDefaultRenderState(false, true) });
+  addEventListener('map-snow-cover', e => { roofSnow.uniforms.cover = e.detail; });
   const colorFor = h => Cesium.Color.fromCssColorString(h < 20 ? '#ded2bd' : h < 55 ? '#c4b7aa' : h < 150 ? '#a7b8c6' : '#738ea5');
 
   async function load(x, y) {
@@ -42,7 +66,7 @@ export function createOsmBuildings(viewer, Cesium) {
           attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(colorFor(f.h)) },
         });
       });
-      tiles.set(key, scene.primitives.add(new Cesium.Primitive({ geometryInstances: instances, appearance: new Cesium.PerInstanceColorAppearance({ translucent: false }) })));
+      tiles.set(key, scene.primitives.add(new Cesium.Primitive({ geometryInstances: instances, appearance: appearance() })));
     } catch (e) { console.warn('건물 타일', key, e); }
   }
   function refresh() {

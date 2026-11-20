@@ -11,7 +11,7 @@
 <body class="map-onboarding">
   <main id="vmap" aria-label="재난 시각화 플랫폼 3D 지도" inert></main>
   <section id="map-start" aria-labelledby="map-start-title">
-    <form id="map-start-form">
+    <form id="map-start-form" onsubmit="return false"><!-- 지도 스크립트가 붙기 전에 눌러도 페이지를 다시 불러오지 않게 -->
       <div class="earthpulse-brand"><span class="earthpulse-mark" aria-hidden="true"></span>EarthPulse</div>
       <div class="map-cloud" id="map-cloud" aria-hidden="true">
         <svg viewBox="0 0 112 82" focusable="false">
