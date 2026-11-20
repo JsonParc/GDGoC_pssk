@@ -19,6 +19,8 @@ const STYLE = `
 #depth-legend .dl-bar{grid-row:1 / span 7;border-radius:5px;min-height:150px}
 #depth-legend .dl-scale span{display:flex;align-items:center;min-height:21px;font-variant-numeric:tabular-nums}
 #depth-legend .dl-scale span i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;flex:none}
+#depth-legend .dl-dry{display:flex;align-items:center;margin-top:6px;color:#b5c5bf;font-size:11.5px}
+#depth-legend .dl-dry i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;background:#d6e8f0;opacity:.45;outline:1px solid #d6e8f066}
 #depth-legend .dl-stat{margin-top:10px;padding:8px 9px;border-radius:9px;background:#182624;font-size:12px}
 #depth-legend .dl-stat b{font-size:13px}
 #depth-legend .dl-note{margin:8px 0 0;color:#a9bbb3;font-size:11px}
@@ -35,6 +37,7 @@ export function attachDepthLegend({ panel }) {
     <div class="dl-body">
       <div class="dl-scale"><div class="dl-bar" style="background:linear-gradient(${bins.map(b => b.color).join(',')})"></div>
         ${bins.map(b => `<span><i style="background:${b.color}"></i>${b.label}</span>`).join('')}</div>
+      <div class="dl-dry"><i></i>안 고임 (2 cm 미만, 분석한 곳)</div>
       <div class="dl-stat" id="dl-stat" role="status">계산 중…</div>
       <p class="dl-note" id="dl-note"></p>
     </div>`;

@@ -470,7 +470,7 @@ function createShared(viewer, Cesium) {
       prim.show = !heatOn && lastH !== null && Number.isFinite(lastH);
       if (!heatOn) return;
       const D = new Float32Array(N * N).fill(NaN);
-      for (let k = 0; k < N * N; k++) if (fill[k] && !sea[k] && Number.isFinite(H[k])) D[k] = level - H[k];
+      for (let k = 0; k < N * N; k++) if (!sea[k] && Number.isFinite(H[k])) D[k] = fill[k] ? Math.max(0, level - H[k]) : 0;
       heat = depthLayer({ enu, half, N, depth: D, mode });
     };
     const removeWater = out.destroy;
@@ -525,7 +525,10 @@ function createShared(viewer, Cesium) {
     let heat = null;
     out.setDepthMap = on => { // 켜 있는 동안 물 면은 숨김 (불투명한 물이 지형 위 색을 가려서)
       heat?.destroy(); heat = null; prim.show = !on;
-      if (on) heat = depthLayer({ enu, half, N, depth: Float32Array.from(D, (v, k) => wet(k) ? v : NaN), mode: '침수 (동네마다 낮은 곳에 모임)' });
+      if (!on) return;
+      const dep = depressionDepth(N, H), cap = .03 + .12 * (look.wet || 0); // 오목한 곳 웅덩이 (배수 안의 비와 같은 한도)
+      heat = depthLayer({ enu, half, N, mode: '침수 · 웅덩이 (동네마다 낮은 곳에 모임)',
+        depth: Float32Array.from(D, (v, k) => sea[k] || !Number.isFinite(H[k]) ? NaN : Math.max(v, Math.min(dep[k], cap))) });
     };
     out.destroy = () => { out.setDepthMap(false); scene.primitives.remove(prim); };
     return out;
@@ -541,14 +544,14 @@ function createShared(viewer, Cesium) {
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) cartos.push(at((i + .5) * cell - half, (j + .5) * cell - half));
     const H = await sampleHeights(cartos), dep = depressionDepth(N, H), seaH = seaN ?? 0, D = new Float32Array(N * N).fill(NaN);
     let cells = 0;
-    for (let k = 0; k < N * N; k++) if (H[k] > seaH + .3 && depthBin(Math.min(dep[k], cap)) >= 0) { D[k] = Math.min(dep[k], cap); cells++; } // 바다 · 높이 모르는 칸 제외
-    const layer = cells ? depthLayer({ enu, half, N, depth: D, mode: '빗물이 고이는 곳' }) : null;
-    if (!cells) dispatchEvent(new CustomEvent('map-depth-stats', { detail: { mode: '빗물이 고이는 곳', max: 0, areaKm2: 0 } }));
+    for (let k = 0; k < N * N; k++) if (H[k] > seaH + .3) { D[k] = Math.min(dep[k], cap); if (depthBin(D[k]) >= 0) cells++; } // 바다 · 높이 모르는 칸 제외 (안 고이는 곳은 0 → 옅게)
+    const layer = depthLayer({ enu, half, N, depth: D, mode: '빗물이 고이는 곳' });
     return { cells, destroy() { layer?.destroy(); } };
   }
 
   /* 깊이 격자 → 형광 히트맵 영상 층 (등고선처럼 구간별 색, 경계는 부드러운 곡선).
      칸 깊이를 scale배로 쌍선형 보간해 픽셀마다 구간 색을 칠하고, 물이 있는 칸(마스크)도 보간해 0.5에서 잘라 경계를 둥글게.
+     depth: NaN = 분석 밖(바다 · 높이 모름), 2 cm 미만 = 분석했지만 안 고임(아주 옅은 색), 2 cm 넘음 = 깊이 구간 색.
      지형 위 영상이라 기복을 따라 붙고 보는 각도와 상관없음. 동 · 북 격자를 경위도 사각형에 펴서 씀 (수 km라 회전 차이 무시) */
   const effectLayers = new Set();
   function depthLayer({ enu, half, N, depth, mode = '', scale = Math.max(4, Math.round(768 / N)) }) { // 그림 약 768 px 한 변
@@ -557,17 +560,17 @@ function createShared(viewer, Cesium) {
     const colors = DEPTH_BINS.map(([, css], b) => { const c = Cesium.Color.fromCssColorString(css); return [c.red * 255, c.green * 255, c.blue * 255, (.55 + b * .05) * 255]; });
     // 1) 칸 → 픽셀: 물 있음(마스크)과 깊이×마스크를 쌍선형 보간  2) 상자 흐림 두 번(가우스에 가까움)으로 계단 · 마름모 모서리를 둥글게
     //    3) 마스크 0.5에서 잘라 경계, 깊이 = (깊이×마스크) / 마스크 로 구간 색
-    const M = new Float32Array(W * W), DM = new Float32Array(W * W);
+    const M = new Float32Array(W * W), DM = new Float32Array(W * W), A = new Float32Array(W * W); // A: 분석한 곳
     for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
       const gx = (x + .5) / scale - .5, gy = (W - 1 - y + .5) / scale - .5; // 그림 위쪽 = 북쪽
       const i = Math.floor(gx), j = Math.floor(gy), tx = gx - i, ty = gy - j;
-      let m = 0, dm = 0;
+      let m = 0, dm = 0, an = 0;
       for (let c = 0; c < 4; c++) {
         const a = Math.max(0, Math.min(N - 1, i + (c & 1))), b = Math.max(0, Math.min(N - 1, j + (c >> 1)));
         const w = (c & 1 ? tx : 1 - tx) * (c >> 1 ? ty : 1 - ty), v = depth[b * N + a];
-        if (Number.isFinite(v)) { m += w; dm += w * v; }
+        if (Number.isFinite(v)) { an += w; if (v >= DEPTH_BINS[0][0]) { m += w; dm += w * v; } }
       }
-      M[y * W + x] = m; DM[y * W + x] = dm;
+      M[y * W + x] = m; DM[y * W + x] = dm; A[y * W + x] = an;
     }
     const r = Math.max(2, Math.round(scale * .75)), tmp = new Float32Array(W * W);
     const blur = A => {
@@ -578,7 +581,10 @@ function createShared(viewer, Cesium) {
     };
     blur(M); blur(DM);
     for (let q = 0; q < W * W; q++) {
-      if (M[q] < .5) continue;                            // 물 있는 곳 경계 (부드러운 곡선)
+      if (M[q] < .5) {                                    // 물 있는 곳 경계 (부드러운 곡선) 밖
+        if (A[q] >= .5) { const o = q * 4; px[o] = 214; px[o + 1] = 232; px[o + 2] = 240; px[o + 3] = 34; } // 분석했지만 안 고임: 아주 옅게
+        continue;
+      }
       const bin = depthBin(DM[q] / M[q]); if (bin < 0) continue;
       const c = colors[bin], o = q * 4;
       px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = c[3];
