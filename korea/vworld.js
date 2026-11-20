@@ -3,29 +3,28 @@ import { enableLocationSearch } from './location-search.js';
 import { enableDisasterControls } from './disasters/controls.js';
 import { improveTileCoverage } from './tile-coverage.js';
 import { attachDisasterPanel } from './disasters/panel.js';
+import { createOnboarding } from './onboarding.js';
 
 const status = document.querySelector('#status');
 const mapStart = document.querySelector('#map-start');
-const mapStartForm = document.querySelector('#map-start-form');
 const region = document.querySelector('#region');
 const credentials = document.querySelector('#credentials');
 const forget = document.querySelector('#forget');
 const storageKey = 'korea-vworld-key';
 // 브이월드가 점검 · 장애로 안 열리면 예비 지도(같은 재난 패널 · 효과, 공개 지형 · 영상 · OSM 건물)로 자동 전환
 let ready = false;
-let openMap, mapFailure;
 const pageOptions = new URLSearchParams(location.search);
 const settingsMode = pageOptions.has('settings');
+let resolveMap;
+const mapReady = new Promise(resolve => { resolveMap = resolve; });
 function toBackup(reason) {
   if (ready) return;
-  if (pageOptions.has('nofallback') || settingsMode) {
+  resolveMap({ failure: reason });
+  if (settingsMode) {
     mapStart.hidden = true;
     status.textContent = reason;
     status.hidden = false;
-    return;
   }
-  mapFailure = reason;
-  enterMap();
 }
 // 브라우저에 저장한 키가 없으면 config.js의 배포용 키
 const vworldKey = () => localStorage.getItem(storageKey) || window.KOREA_VWORLD_KEY || '';
@@ -36,20 +35,61 @@ const regions = {
   busan: [129.159, 35.145, 1500, -45],
   jeju: [126.53, 33.30, 8000, -45],
 };
-function enterMap() {
-  const choice = settingsMode ? 'seoul' : mapStartForm.dataset.region;
-  if (!Object.hasOwn(regions, choice) || mapStart.hidden && !settingsMode) return;
-  if (openMap) {
-    const showMap = openMap;
-    openMap = null;
-    showMap(choice);
-  } else if (mapFailure) {
-    console.warn('브이월드 실패 → 예비 지도:', mapFailure);
-    const query = new URLSearchParams({ fallback: '1', view: regions[choice].join(','), events: choice });
-    location.replace('./backup.html?' + query);
-  }
+function regionView(Cesium, [longitude, latitude, height, pitch]) {
+  return {
+    destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, height),
+    orientation: { heading: 0, pitch: Cesium.Math.toRadians(pitch), roll: 0 },
+  };
 }
-window.addEventListener('map-start-request', enterMap);
+
+let workspace;
+function openWorkspace({ map, viewer, Cesium }, eventRegion) {
+  if (!workspace) {
+    const disasters = enableDisasterControls(viewer, Cesium);
+    enableLocationSearch({ key: vworldKey(), viewer, Cesium });
+    workspace = attachDisasterPanel({ viewer, Cesium, disasters, eventRegion });
+    window.koreaVWorld = { map, viewer, getElevation, disasters, disasterPanel: workspace };
+    window.dispatchEvent(new Event('korea-vworld-ready'));
+  }
+  workspace?.setOpen(true);
+  workspace?.cards?.setOpen(true);
+}
+
+const placeView = place => place.region ? regions[place.region] : [place.longitude, place.latitude, 1450, -47];
+let previewRequest = 0;
+
+async function previewMap(place) {
+  const request = ++previewRequest;
+  const { viewer, Cesium } = await mapReady;
+  if (!viewer || request !== previewRequest) return;
+  const view = regionView(Cesium, placeView(place));
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) viewer.camera.setView(view);
+  else viewer.camera.flyTo({ ...view, duration: 1.1 });
+}
+
+async function launch(place) {
+  previewRequest++;
+  const view = placeView(place);
+  const eventRegion = place.region || { longitude: place.longitude, latitude: place.latitude };
+  const mapInfo = await mapReady;
+  if (mapInfo.failure) {
+    if (pageOptions.has('nofallback')) throw new Error(mapInfo.failure);
+    const query = new URLSearchParams({ fallback: '1', view: view.join(','), events: place.region || 'nearby' });
+    location.replace('./backup.html?' + query);
+    return false;
+  }
+  const { viewer, Cesium } = mapInfo;
+  region.value = place.region || '';
+  const cameraView = regionView(Cesium, view);
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) viewer.camera.setView(cameraView);
+  else await new Promise(resolve => viewer.camera.flyTo({ ...cameraView, duration: 1.6, complete: resolve, cancel: resolve }));
+  openWorkspace(mapInfo, eventRegion);
+  return true;
+}
+
+if (!settingsMode) {
+  createOnboarding({ key: vworldKey, launch, previewMap });
+}
 
 credentials.addEventListener('submit', event => {
   event.preventDefault();
@@ -66,8 +106,7 @@ forget.addEventListener('click', () => {
 function start() {
   const { vw } = window;
   if (!vw?.Map) throw new Error('브이월드 SDK를 불러오지 못했습니다. 인증키와 등록 도메인을 확인하세요.');
-  const initialRegion = settingsMode ? 'seoul' : mapStartForm.dataset.region || 'korea';
-  const [longitude, latitude, altitude, pitch] = regions[initialRegion];
+  const [longitude, latitude, altitude, pitch] = regions.seoul;
   const map = new vw.Map();
   map.setOption({
     mapId: 'vmap',
@@ -87,25 +126,10 @@ function start() {
     map.getElementById?.('poi_base')?.hide?.();
     ready = true;
     status.hidden = true;
-    function regionView(id) {
-      const [lng, lat, height, tilt] = regions[id];
-      return {
-        destination: Cesium.Cartesian3.fromDegrees(lng, lat, height),
-        orientation: { heading: 0, pitch: Cesium.Math.toRadians(tilt), roll: 0 },
-      };
-    }
-    region.addEventListener('change', () => viewer.camera.flyTo(regionView(region.value)));
-    openMap = choice => {
-      region.value = choice;
-      if (choice !== initialRegion) viewer.camera.setView(regionView(choice));
-      const disasters = enableDisasterControls(viewer, Cesium);
-      enableLocationSearch({ key: vworldKey(), viewer, Cesium });
-      const disasterPanel = attachDisasterPanel({ viewer, Cesium, disasters, eventRegion: settingsMode ? undefined : choice });
-      window.koreaVWorld = { map, viewer, getElevation, disasters, disasterPanel };
-      mapStart.hidden = true;
-      window.dispatchEvent(new Event('korea-vworld-ready'));
-    };
-    enterMap();
+    region.addEventListener('change', () => viewer.camera.flyTo(regionView(Cesium, regions[region.value])));
+    const mapInfo = { map, viewer, Cesium };
+    resolveMap(mapInfo);
+    if (settingsMode) openWorkspace(mapInfo);
   };
   map.start();
 }
