@@ -10,6 +10,7 @@
 import { makeDraggable, makeWindow } from './draggable.js';
 import { articleEffect, validPosition } from './article-effect.js';
 import { attachRegionAnalysis } from './region-analysis.js';
+import { flyToSite, UNDER_CLOUD } from './camera.js';
 
 const TYPE_LABEL = {
   flood: ['호우 · 홍수', '🌧', '#2d6cdf'], typhoon: ['태풍', '🌀', '#5b4bd6'], heavysnow: ['대설', '❄', '#5aa0c8'], coldwave: ['한파', '🥶', '#3f8fb5'],
@@ -398,7 +399,7 @@ export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
       toggleSave(d);
       event.currentTarget.textContent = isSaved(d.id) ? '★ 저장됨' : '☆ 저장';
     };
-    box.querySelector('#ev-fly').onclick = () => fly(origin);
+    box.querySelector('#ev-fly').onclick = () => fly(origin, eff?.type);
     box.querySelector('#ev-run').onclick = () => run(d, eff, origin, true, box);
     box.querySelector('#ev-here').onclick = () => {
       const canvas = viewer.scene.canvas;
@@ -406,7 +407,12 @@ export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
       const point = ray && viewer.scene.globe.pick(ray, viewer.scene);
       if (!point) { box.querySelector('#ev-result').textContent = '지도 가운데에 지면이 보이도록 이동해 주세요.'; return; }
       const geo = Cesium.Cartographic.fromCartesian(point);
-      run(d, eff, { longitude: Cesium.Math.toDegrees(geo.longitude), latitude: Cesium.Math.toDegrees(geo.latitude) }, false, box);
+      // 그 자리 그대로 보되, 이럴 땐 그 지점으로 내려가서 보여 줌:
+      // - 카메라가 지면 위 4 km보다 높을 때 (비 · 눈 · 안개는 약 8 km 위에선 안 보임: 전국 보기 등)
+      // - 비 · 눈 재난인데 카메라가 비구름 밑면(지면 위 약 400 m)보다 높을 때 (구름 속이면 화면이 회색으로만 보임: 예비 지도 기본 시점 1 km 등)
+      const camH = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC).height - (geo.height || 0);
+      const move = camH > 4000 || (UNDER_CLOUD.includes(eff?.type) && camH > 450);
+      run(d, eff, { longitude: Cesium.Math.toDegrees(geo.longitude), latitude: Cesium.Math.toDegrees(geo.latitude) }, move, box, '현재 지역');
     };
     box.querySelector('#ev-guide').addEventListener('toggle', async e => {
       const g = e.target; if (!g.open || g.dataset.done) return; g.dataset.done = 1;
@@ -417,25 +423,25 @@ export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
     });
   }
 
-  function fly(at) {
+  // 발생 지점으로 이동: 비 · 눈 재난은 비구름 아래(지면 위 350 m), 그 밖은 지면 위 1.2 km (camera.js)
+  function fly(at, type) {
     if (!validPosition(at)) return;
-    // 발생 지점 남쪽 3 km, 높이 1.6 km에서 비스듬히 내려다봄
-    viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(at.longitude, at.latitude - .027, 1600), orientation: { heading: 0, pitch: Cesium.Math.toRadians(-32), roll: 0 }, duration: 2.2 });
+    flyToSite(viewer, Cesium, at, type);
   }
-  async function run(d, eff, at, move, box) {
+  async function run(d, eff, at, move, box, label = move ? '발생 지역' : '현재 지역') {
     if (!eff?.ready || !validPosition(at) || !panel || panel.get().activeCard?.pending) return;
     const result = box.querySelector('#ev-result');
     result.textContent = '기사 규모를 적용하는 중…';
     try {
-      if (move) fly(at);
+      if (move) fly(at, eff.type);
       const applied = await panel.set(eff.type, eff.params, at, { cardId: d.id, title: d.title, sources: eff.sources });
       if (!applied || !result.isConnected) return;
-      result.textContent = `${move ? '발생 지역' : '현재 지역'} (${at.latitude.toFixed(4)}°, ${at.longitude.toFixed(4)}°)에 기사 규모를 적용했습니다.`;
+      result.textContent = `${label} (${at.latitude.toFixed(4)}°, ${at.longitude.toFixed(4)}°)에 기사 규모를 적용했습니다.`;
     } catch (e) { result.textContent = '적용하지 못했습니다: ' + e.message; }
   }
 
   // 지역 변화 분석 탭 (지도 클릭 · 장소 검색으로 고른 지역의 과거 이력 · 홍수 전후 비교)
-  const regionUI = attachRegionAnalysis({ box: $('ev-region-box'), apiBase: API, panel, typeLabel: TYPE_LABEL, esc,
+  const regionUI = attachRegionAnalysis({ box: $('ev-region-box'), apiBase: API, viewer, Cesium, panel, typeLabel: TYPE_LABEL, esc,
     onCardSaved: () => loadList(), openCard: id => { setTab('recent'); openDetail(id); } });
   function setTab(next) {
     tab = next;

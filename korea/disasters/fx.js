@@ -90,7 +90,7 @@ const SNOW_FS = `uniform sampler2D colorTexture; varying vec2 v_textureCoordinat
    땅이 하얘지는 건 기본 위성 영상을 밝게 · 채도를 낮춰서(길 · 숲 · 그림자 무늬가 그대로 남음), 그 위 눈 층은 얼룩만 최대 50%.
    얼룩 무늬: 이음매 없는 값 잡음(주기 256 px, 4 · 8 · 16 · 32칸). 얇게 쌓이면 듬성듬성.
    해 음영은 지구 조명이 그대로 줌. 바다 · 강은 물 표면(water.js)이 위를 덮음. 지붕 눈은 buildings.js */
-function snowTileDataUrl(k) {
+function groundTileDataUrl(k, kind = 'snow') {
   const N = 256, c = document.createElement('canvas'); c.width = c.height = N;
   const g = c.getContext('2d'), img = g.createImageData(N, N), d = img.data;
   const hash = i => { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
@@ -105,8 +105,14 @@ function snowTileDataUrl(k) {
   const o = [[octave(4, 1), .4], [octave(8, 2), .3], [octave(16, 3), .2], [octave(32, 4), .1]];
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     let n = 0; for (const [f, w] of o) n += f(x, y) * w;
+    const q = (y * N + x) * 4;
+    if (kind === 'puddle') { // 웅덩이: 낮은 곳(잡음 아래쪽)에만 작게, 하늘을 비추는 어두운 청회색 (k = 고이는 정도)
+      const a = smoothstep01(.62 - .3 * k, .66 - .3 * k, 1 - n) * lerp(.35, .7, k);
+      d[q] = 58; d[q + 1] = 70; d[q + 2] = 82; d[q + 3] = a * 255;
+      continue;
+    }
     const a = smoothstep01(0, .35, k + (n - .5) * .9 * (1 - .6 * k)) * lerp(.2, .5, n); // 얼룩만 (전체 밝기는 기본 영상을 하얗게 바꿔서)
-    const q = (y * N + x) * 4, b = lerp(.9, 1, n);
+    const b = lerp(.9, 1, n);
     d[q] = 228 * b; d[q + 1] = 233 * b; d[q + 2] = 242 * b; d[q + 3] = a * 255;
   }
   g.putImageData(img, 0, 0);
@@ -193,7 +199,7 @@ function createShared(viewer, Cesium) {
     if (on && pausedAt == null) pausedAt = time();
     else if (!on && pausedAt != null) { pausedTotal += time() - pausedAt; pausedAt = null; }
   }
-  const look = { vis: 40000, tint: new Cesium.Cartesian3(.75, .77, .8), tintAmt: 0, gloom: 0, heat: 0, rain: 0, snow: 0, cover: 0, wind: 0, dir: 0 };
+  const look = { vis: 40000, tint: new Cesium.Cartesian3(.75, .77, .8), tintAmt: 0, gloom: 0, heat: 0, rain: 0, snow: 0, cover: 0, wet: 0, wind: 0, dir: 0 };
   const cur = { ...look, tint: look.tint.clone() }; // 부드럽게 바뀌도록 따라감
   const MA = window.MapAtmosphere;
   const sky = { id: null, on: 0, texSun: new Cesium.Cartesian2(1, 0), tint: 0, gain: 1, hor: new Cesium.Cartesian3(.7, .75, .8), zen: new Cesium.Cartesian3(.2, .4, .7) };
@@ -273,12 +279,12 @@ function createShared(viewer, Cesium) {
     updateCamBasis();
     const cc = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC); if (cc) camH = Math.max(1, cc.height - (scene.globe.getHeight(cc) ?? 0));
     const k = .05;
-    for (const key of ['vis', 'tintAmt', 'gloom', 'heat', 'rain', 'snow', 'cover', 'wind']) cur[key] = lerp(cur[key], look[key], key === 'cover' ? .08 : k);
+    for (const key of ['vis', 'tintAmt', 'gloom', 'heat', 'rain', 'snow', 'cover', 'wet', 'wind']) cur[key] = lerp(cur[key] ?? 0, look[key], key === 'cover' || key === 'wet' ? .08 : k);
     cur.dir = look.dir; Cesium.Cartesian3.lerp(cur.tint, look.tint, k, cur.tint);
     stages.atmos.enabled = wx() > 0 && (visEff() < 39000 || cur.gloom > .01 || cur.tintAmt > .01 || cur.heat > .01);
     stages.shake.enabled = Math.abs(shake.x) + Math.abs(shake.y) + Math.abs(shake.z) > 1e-5;
     if (C) { C.tick(time()); here = C.precipHere(); }
-    stages.rain.enabled = screenPrecip('rain') > .01; stages.snow.enabled = screenPrecip('snow') > .01; setGroundSnow(cur.cover);
+    stages.rain.enabled = screenPrecip('rain') > .01; stages.snow.enabled = screenPrecip('snow') > .01; setGround(cur.cover, cur.wet);
     // 하늘 사진 위 구름 무늬: 3D 구름이 있으면 먼 하늘을 흐리게 하는 정도로만
     cur.clouds = lerp(cur.clouds || 0, clamp(cur.gloom * 1.3 + cur.rain * .6 + cur.snow * .6, 0, 1) * (C && C.active ? .45 : 1), .03);
     if (sky.id) sky.on = (camH < 60000 ? 1 : 0) * (1 - wx() * .6 * clamp(cur.rain + cur.snow + cur.gloom, 0, 1));
@@ -299,30 +305,34 @@ function createShared(viewer, Cesium) {
   }
   const tickers = new Set();
 
-  // 쌓인 눈: 기본 영상 층을 덮임 c만큼 밝게 · 채도 낮게 (원래 값은 기억해 두었다 되돌림) + 얼룩 층(snowTileDataUrl, 4단계)
-  const snowUrls = {}, baseLook = new Map();
-  let snowLayer = null, snowStep = 0, snowC = 0;
-  function setGroundSnow(c) {
-    c = c > .02 ? Math.min(1, c) : 0;
-    if (Math.abs(c - snowC) < .01 && (c > 0) === (snowC > 0)) return;
-    snowC = c;
-    dispatchEvent(new CustomEvent('map-snow-cover', { detail: c })); // 예비 지도 건물 지붕 눈 (osm-buildings.js)
-    const layers = viewer.imageryLayers;
-    for (let i = 0; i < layers.length; i++) {
-      const l = layers.get(i); if (l === snowLayer) continue;
-      if (!baseLook.has(l)) baseLook.set(l, { brightness: l.brightness, saturation: l.saturation, contrast: l.contrast, gamma: l.gamma });
-      const o = baseLook.get(l);
-      l.brightness = o.brightness * (1 + .7 * c); l.saturation = o.saturation * (1 - .75 * c);
-      l.contrast = o.contrast * (1 - .12 * c); l.gamma = o.gamma * (1 + .3 * c);
-    }
-    if (!c) baseLook.clear();
-    const step = c ? Math.min(4, Math.ceil(c * 4)) : 0;
-    if (step === snowStep) return;
-    snowStep = step;
-    if (snowLayer) { layers.remove(snowLayer, true); snowLayer = null; }
+  // 지면 표현: 쌓인 눈(cover)과 젖은 땅 · 웅덩이(wet)를 기본 영상 층 조정 + 무늬 층으로.
+  // 눈: 밝게 · 채도 낮게 + 눈 얼룩 층. 젖음: 조금 어둡고 진하게(젖은 아스팔트) + 웅덩이 층. 원래 값은 기억해 두었다 되돌림
+  const groundUrls = {}, baseLook = new Map(), overlay = { snow: { layer: null, step: 0 }, puddle: { layer: null, step: 0 } };
+  let groundC = 0, groundW = 0;
+  function setOverlay(kind, v) {
+    const o = overlay[kind], layers = viewer.imageryLayers, step = v ? Math.min(4, Math.ceil(v * 4)) : 0;
+    if (step === o.step) return;
+    o.step = step;
+    if (o.layer) { layers.remove(o.layer, true); o.layer = null; }
     if (!step) return;
-    snowUrls[step] ??= snowTileDataUrl(step / 4);
-    snowLayer = layers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({ url: snowUrls[step], maximumLevel: 21, tileWidth: 256, tileHeight: 256 }));
+    groundUrls[kind + step] ??= groundTileDataUrl(step / 4, kind);
+    o.layer = layers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({ url: groundUrls[kind + step], maximumLevel: 21, tileWidth: 256, tileHeight: 256 }));
+  }
+  function setGround(c, w) {
+    c = c > .02 ? Math.min(1, c) : 0; w = w > .02 ? Math.min(1, w) : 0;
+    if (Math.abs(c - groundC) < .01 && Math.abs(w - groundW) < .01 && (c > 0) === (groundC > 0) && (w > 0) === (groundW > 0)) return;
+    if (c !== groundC) dispatchEvent(new CustomEvent('map-snow-cover', { detail: c })); // 예비 지도 건물 지붕 눈 (osm-buildings.js)
+    groundC = c; groundW = w;
+    const layers = viewer.imageryLayers, ours = new Set([overlay.snow.layer, overlay.puddle.layer]);
+    for (let i = 0; i < layers.length; i++) {
+      const l = layers.get(i); if (ours.has(l)) continue;
+      if (!baseLook.has(l)) baseLook.set(l, { brightness: l.brightness, saturation: l.saturation, contrast: l.contrast, gamma: l.gamma });
+      const o = baseLook.get(l), wet = w * (1 - c); // 눈이 덮으면 젖은 티는 안 남
+      l.brightness = o.brightness * (1 + .7 * c) * (1 - .22 * wet); l.saturation = o.saturation * (1 - .75 * c) * (1 + .2 * wet);
+      l.contrast = o.contrast * (1 - .12 * c) * (1 + .08 * wet); l.gamma = o.gamma * (1 + .3 * c) * (1 - .1 * wet);
+    }
+    if (!c && !w) baseLook.clear();
+    setOverlay('snow', c); setOverlay('puddle', c ? 0 : w);
   }
 
   /* 해수면: 지도 지형에서 바다인 곳의 높이. 선택 지점 둘레(1~12 km) 점들 중 공개 DEM이 바다(< −1 m)인 곳의 지도 높이 중앙값.
@@ -545,8 +555,12 @@ function createEffect(type, ctx, S) {
     if (type === 'tsunami') water.setReach(tsReach);
     if (type !== 'tsunami') water.setHeight(baseH() + waterAmount());
   }
+  // 물이 거의 없으면(2 cm 미만) 물판을 만들지 않음: 깊이 0으로 만들면 기준 지면보다 조금이라도 낮은 땅이 다 잠겨 보였음 (배수 능력 안의 비 등).
+  // 그때는 젖은 노면 · 웅덩이(setGround의 wet)만
+  const dry = () => type !== 'tsunami' && waterAmount() < .02;
   function scheduleWater() {
     if (!waterSpec) return;
+    if (dry()) { waterKey = ''; waterReq++; clearTimeout(waterTimer); if (water) { water.destroy(); water = null; } return; }
     const key = [p.waterBase, (baseH() + waterAmount()).toFixed(1), p.polygon ? p.polygon.length : 0, sea].join('|');
     if (key === waterKey) return; waterKey = key;
     clearTimeout(waterTimer); waterTimer = setTimeout(buildWater, 350); // 슬라이더를 끄는 동안은 기다렸다가 한 번
@@ -584,8 +598,12 @@ function createEffect(type, ctx, S) {
     scheduleClouds();
     // 산불: 연기는 입자로 직접 보이므로 화면 전체 연무는 옅게 (후처리 안개가 반투명 입자 위에 덮여 연기를 가리지 않게)
     S.setLook(type === 'wildfire' ? { ...env, vis: Math.max(env.vis, 30000), tintAmt: (env.tintAmt || 0) * .4, gloom: 0 } : env);
+    // 빗물 고임: 배수 능력(호우는 drain, 태풍은 일반 도시 하수도 설계 시간당 약 40 mm로 봄) 안의 비면 노면이 젖고 웅덩이만 살짝,
+    // 넘으면 넘친 만큼 저지대 침수(아래 물판). 오래 내릴수록 더 고임
+    const rainNow = type === 'flood' || type === 'typhoon' ? p.rain || 0 : 0, drainCap = type === 'flood' ? Math.max(p.drain, 1) : 40;
+    S.look.wet = rainNow > 0 ? clamp(.25 + .75 * Math.min(1, rainNow / drainCap) * Math.min(1, (p.hours || 2) / 2), 0, 1) : 0;
     if (waterSpec) {
-      if (type !== 'tsunami') { const lv = baseH() + waterAmount(); if (water) water.setHeight(lv); if (bReady) B.water(lv, false); }
+      if (type !== 'tsunami' && !dry()) { const lv = baseH() + waterAmount(); if (water) water.setHeight(lv); if (bReady) B.water(lv, false); }
       scheduleWater();
     }
     // 지도 바다 표면도 같이 올림: 해수면 상승(+ 폭풍해일) · 태풍 폭풍해일 (해일은 아래 tick에서 매 프레임)
@@ -790,7 +808,7 @@ function createEffect(type, ctx, S) {
       for (const e of entities) viewer.entities.remove(e);
       for (const l of quakeLines) l.destroy();
       clearFire();
-      S.setLook({}); S.look.cover = 0; S.seaRise = 0;
+      S.setLook({}); S.look.cover = 0; S.look.wet = 0; S.seaRise = 0;
       if (usesB) B.end();
       clearTimeout(cloudTimer); if (S.C && !S.C.api) S.C.clear();
     },

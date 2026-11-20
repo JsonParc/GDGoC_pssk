@@ -7,10 +7,11 @@
             홍수 전 · 후: 같은 위치 · 비 · 시간에서 배수 능력만 바꿔 koreaDisaster.set('flood', …)으로 전환
    기사 근거 + 가정 기반 비교이고 실제 침수 예측이 아님. 준공이 확인된 배수 시설이 없으면 비교를 막고, 사용자가 '가정 시나리오'를 고를 때만 엶 */
 import {
-  jobState, gaveUp, errorMessage, timelineView, scenarioView, onlyDrainDiffers, regionNameFromAddress, inKoreaPoint, POLL_MS, STAGE_LABEL,
+  jobState, gaveUp, errorMessage, timelineView, scenarioView, changeView, onlyDrainDiffers, regionNameFromAddress, inKoreaPoint, POLL_MS, STAGE_LABEL,
 } from './region-model.js';
-import { reverseGeocode } from '../location-search.js';
+import { reverseGeocode, findMapPlaces } from '../location-search.js';
 import { articleEffect } from './article-effect.js';
+import { flyToSite, cameraIsHigh, UNDER_CLOUD } from './camera.js';
 
 const STYLE = `
 #ev-region-box{display:flex;flex-direction:column;gap:12px;padding:4px 4px 8px}
@@ -53,7 +54,7 @@ const STEP_NAME = { cache: '캐시 조회', ...STAGE_LABEL };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const vworldKey = () => { try { return localStorage.getItem('korea-vworld-key') || window.KOREA_VWORLD_KEY || ''; } catch { return window.KOREA_VWORLD_KEY || ''; } };
 
-export function attachRegionAnalysis({ box, apiBase, panel, typeLabel, esc, onCardSaved, openCard }) {
+export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, typeLabel, esc, onCardSaved, openCard }) {
   if (!document.querySelector('style[data-region-analysis]')) {
     const style = document.createElement('style'); style.dataset.regionAnalysis = ''; style.textContent = STYLE; document.head.append(style);
   }
@@ -73,6 +74,53 @@ export function attachRegionAnalysis({ box, apiBase, panel, typeLabel, esc, onCa
     let body = null; try { body = await res.json(); } catch { /* 본문 없음 */ }
     if (!res.ok) throw Object.assign(new Error(errorMessage(res.status, body)), { status: res.status });
     return body;
+  }
+
+  /* ── 지도: 공사 · 시설 변화 표시 (기사에 위치가 있는 것만), 카메라 ── */
+  let markers = [];
+  const clearMarkers = () => { for (const e of markers) viewer?.entities.remove(e); markers = []; };
+  function showFacilities(result) {
+    clearMarkers();
+    if (!viewer || !Cesium) return { total: 0, shown: 0 };
+    const facilities = (result?.changes || []).filter(c => c.change_type !== 'disaster_event');
+    for (const c of facilities) if (Number.isFinite(c.location?.latitude) && Number.isFinite(c.location?.longitude)) addMarker(c, c.location, false);
+    return { total: facilities.length, shown: markers.length, searched: 0 };
+  }
+  function addMarker(c, at, estimated) {
+    const v = changeView(c);
+    markers.push(viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(at.longitude, at.latitude),
+      point: { pixelSize: 12, color: Cesium.Color.fromCssColorString(v.statusColor), outlineColor: Cesium.Color.WHITE, outlineWidth: 2,
+        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+      label: { text: `${v.facility || v.kind} · ${v.status}${v.date ? ' ' + v.date : ''}${estimated ? ' (장소 검색 위치)' : ''}`, font: '600 13px system-ui', showBackground: true,
+        backgroundColor: Cesium.Color.fromCssColorString('#202c2ce6'), pixelOffset: new Cesium.Cartesian2(0, -16),
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM, heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+    }));
+  }
+  // 기사에 좌표가 없는 시설: "지역 이름 + 시설 이름"을 브이월드 장소 검색으로 찾아 분석 지점 15 km 안이면 표시 (기사 근거가 아니라 '장소 검색 위치'로 구분)
+  const km = (a, b) => Math.hypot((a.longitude - b.longitude) * 88.4, (a.latitude - b.latitude) * 111.2);
+  async function locateFacilities(result, token) {
+    const near = point() || (result?.region ? { longitude: result.region.center_lon, latitude: result.region.center_lat } : null);
+    const town = (result?.region?.display_name || '').split(/\s+/)[1] || ''; // "강원특별자치도 강릉시" → "강릉시"
+    const todo = (result?.changes || []).filter(c => c.change_type !== 'disaster_event' && c.facility_name && !Number.isFinite(c.location?.latitude)).slice(0, 8);
+    if (!near || !todo.length) return;
+    for (const c of todo) {
+      let places = [];
+      try { places = await findMapPlaces(vworldKey(), `${town} ${c.facility_name}`.trim()); } catch { continue; }
+      if (token !== runToken) return;
+      const best = places.map(p => ({ ...p, d: km(p, near) })).filter(p => p.d <= 15).sort((a, b) => a.d - b.d)[0];
+      if (!best) continue;
+      st.estimated[c.id] = { longitude: best.longitude, latitude: best.latitude, title: best.title };
+      addMarker(c, best, true);
+      st.facilities.shown = markers.length; st.facilities.searched++;
+      renderResult();
+    }
+  }
+  // 비 · 눈 같은 날씨는 카메라가 지면 위 약 8 km보다 높으면 안 보임 → 그때만 그 지점으로 내려감
+  function flyIfHigh(at, force = false, type = null) {
+    if (!viewer || !Cesium || !at) return;
+    // 높을 때만 내려감: 비 · 눈 재난은 비구름 밑면(지면 위 약 400 m)보다 높으면, 그 밖은 4 km보다 높으면 (camera.js)
+    if (force || cameraIsHigh(viewer, Cesium, UNDER_CLOUD.includes(type) ? 450 : 4000)) flyToSite(viewer, Cesium, at, type);
   }
 
   /* ── 대상 지점 ── */
@@ -186,6 +234,9 @@ export function attachRegionAnalysis({ box, apiBase, panel, typeLabel, esc, onCa
   function finish(result, token, generatedAt) {
     if (token !== runToken) return;
     Object.assign(st, { phase: 'done', result, error: null, allowAssumed: false, shown: null, notes: {}, generatedAt: generatedAt || null });
+    st.estimated = {};
+    st.facilities = showFacilities(result);
+    locateFacilities(result, token);
     renderTarget(); renderStatus(); renderResult();
   }
   function renderStatus() {
@@ -217,12 +268,18 @@ export function attachRegionAnalysis({ box, apiBase, panel, typeLabel, esc, onCa
     const effects = new Map((r.changes || []).filter(c => c.change_type === 'disaster_event')
       .map(c => [c.id, articleEffect({ ...c, type: c.disaster_type }, window.DisasterFX?.TYPES)]));
     const itemHtml = v => itemTemplate(v, effects.get(v.id));
+    const fac = st.facilities || { total: 0, shown: 0 };
+    const facNote = !fac.total ? '' : fac.shown
+      ? `공사 · 시설 변화 ${fac.total}건 중 ${fac.shown}건을 지도에 표시했습니다 (점 색 = 상태${fac.searched ? `, ${fac.searched}건은 기사에 위치가 없어 장소 검색으로 찾은 위치` : ''}).`
+      : `공사 · 시설 변화 ${fac.total}건이 있지만 위치를 찾지 못해 지도에 표시하지 않았습니다.`;
     const region = r.region?.display_name ? esc(r.region.display_name) : '';
     el.innerHTML = `<div class="ra-sec"><h4>${region} 이력 (${tl.items.length}건)</h4>
+        ${facNote ? `<p class="note">${esc(facNote)}</p>` : ''}
         ${tl.empty ? `<p class="empty">${esc(tl.empty)}</p>` : tl.items.map(itemHtml).join('')}
         ${tl.notice ? `<p class="note">${esc(tl.notice)}</p>` : ''}</div>
       ${sv.exists ? scenarioHtml(sv) : ''}`;
     el.querySelectorAll('[data-replay]').forEach(b => b.onclick = () => replay(+b.dataset.replay));
+    el.querySelectorAll('[data-fly]').forEach(b => b.onclick = () => { const id = +b.dataset.fly, c = st.result?.changes?.find(x => x.id === id); const at = Number.isFinite(c?.location?.latitude) ? c.location : st.estimated?.[id]; if (at) flyIfHigh(at, true); });
     el.querySelectorAll('[data-card-save]').forEach(b => b.onclick = () => saveCard(+b.dataset.cardSave, b));
     const consent = el.querySelector('#ra-consent');
     if (consent) consent.onchange = e => { st.allowAssumed = e.target.checked; renderResult(); };
@@ -243,6 +300,7 @@ export function attachRegionAnalysis({ box, apiBase, panel, typeLabel, esc, onCa
       ${v.isEvent ? `<div class="ra-row">${v.replayable && eff?.ready ? `<button type="button" data-replay="${v.id}">이 지점에 재현</button>`
         : `<span class="note">${esc(!v.replayable ? '이 재난 종류는 지도 효과가 없습니다.' : eff?.reason || '기사에서 규모 수치를 확인할 수 없어 재현할 수 없습니다.')}</span>`}
         <button type="button" data-card-save="${v.id}">재난 카드로 저장</button></div>` : ''}
+      ${!v.isEvent && (Number.isFinite(st.result?.changes?.find(x => x.id === v.id)?.location?.latitude) || st.estimated?.[v.id]) ? `<div class="ra-row"><button type="button" data-fly="${v.id}">지도에서 보기</button>${st.estimated?.[v.id] ? `<span class="note">장소 검색 위치: ${esc(st.estimated[v.id].title)}</span>` : ''}</div>` : ''}
       ${st.notes[v.id] ? `<p class="note" role="status">${esc(st.notes[v.id])}</p>` : ''}</div>`;
   }
   function scenarioHtml(sv) {
@@ -271,7 +329,8 @@ export function attachRegionAnalysis({ box, apiBase, panel, typeLabel, esc, onCa
   async function showScenario(phase) {
     const sv = scenarioView(st.result?.scenario, st.allowAssumed);
     if (!sv.available || !onlyDrainDiffers(sv.before, sv.after) || !panel) return;
-    const s = sv[phase], at = point() || sv.position; // 같은 위치 · 비 · 시간, 배수 능력만 다름 (카메라는 그대로)
+    const s = sv[phase], at = point() || sv.position; // 같은 위치 · 비 · 시간, 배수 능력만 다름 (카메라는 그대로, 너무 높을 때만 내려감)
+    flyIfHigh(at, false, 'flood');
     st.notes.scenario = '적용하는 중…'; renderResult();
     try {
       const ok = await panel.set(s.type, { ...s.params }, at, { title: `${st.result.region?.display_name || ''} · 공사 ${phase === 'before' ? '전' : '후'}`, regionScenario: phase, assumed: !sv.verified });
@@ -286,6 +345,7 @@ export function attachRegionAnalysis({ box, apiBase, panel, typeLabel, esc, onCa
     const at = point() || c.location || c.map_effect?.position;
     if (!eff?.ready) { st.notes[id] = eff?.reason || '기사에서 규모 수치를 확인할 수 없어 재현할 수 없습니다.'; renderResult(); return; }
     st.notes[id] = '재현하는 중…'; renderResult();
+    flyIfHigh(at, false, eff.type);
     try {
       const ok = await panel.set(eff.type, eff.params, at, { regionChangeId: id, title: c.description, sources: eff.sources });
       st.notes[id] = ok ? '이 지점에 기사 규모로 재현했습니다.' : '';
