@@ -260,8 +260,10 @@ function createShared(viewer, Cesium) {
   const wx = () => clamp(1 - (camH - 2500) / 5500, 0, 1); // 날씨가 보이는 정도 (구름층 위 · 우주에선 0)
   // 화면 비 · 눈: 3D 구름이 있으면 카메라 머리 위 비 · 눈 구름 밑에 있을 때만 (구름 밖 · 위에선 빗줄기 커튼으로만 보임)
   const screenPrecip = kind => {
-    if (C && C.active) return here.kind === kind ? here.k * Math.max(kind === 'rain' ? cur.rain : cur.snow, .7) : 0;
-    return (kind === 'rain' ? cur.rain : cur.snow) * wx();
+    // 재난이 켜져 있는 동안은 늘 보임 (예전엔 3D 구름이 있으면 카메라가 비구름 바로 아래일 때만 보여서, 카드로 불러오면 간혹 안 보였음)
+    const base = (kind === 'rain' ? cur.rain : cur.snow) * wx();
+    if (C && C.active && here.kind === kind) return Math.max(base, here.k * Math.max(kind === 'rain' ? cur.rain : cur.snow, .7));
+    return base;
   };
   // 바람이 화면에서 어느 쪽으로 부는지 (비 기울기 · 눈 흐름)
   const windSide = () => Math.sin(((cur.dir + 180) * Math.PI / 180) - viewer.camera.heading);
@@ -704,7 +706,7 @@ function createEffect(type, ctx, S) {
   const fc = new Cesium.Color();
   tick.add((now, real) => {
     if (type !== 'wildfire' || !fire) return;
-    const g = clamp(.03 + (now - fire.t0) / 30, 0, 1.3), band = .16;
+    const g = clamp(.03 + (now - fire.t0) / 30, 0, 1), band = .16; // 1에서 멈춤: 가장자리 화선은 끌 때까지 계속 탐
     if (bReady) {
       if (!fire.mapped) { // 건물용 불 번짐 지도: 영역 안 칸마다 발화점에서의 상대 거리 (밖 = 1.5)
         const n = 128, [x0, y0, sx, sy] = fire.box, rel = new Float32Array(n * n);
@@ -750,7 +752,8 @@ function createEffect(type, ctx, S) {
   });
 
   /* ── 대설: 경과 시간(h)에 따라 쌓이고(눈 오는 시간 동안) 녹음(녹는 시간 동안). 내리는 구간 20초 + 녹는 구간 25초 타임랩스
-     (예전엔 전체 45초라 8시간 눈이 6초 만에 끝났음). 진행 멈춤이면 그 순간에 머문 채 눈만 계속 내림.
+     (예전엔 전체 45초라 8시간 눈이 6초 만에 끝났음). 처음부터 재생하면 가장 많이 쌓인 때에서 멈추고 끌 때까지 계속 내림.
+     녹는 모습은 경과 시간을 눈 오는 시간 뒤로 옮기면 봄. 단계 진행 중지면 그 순간에 머문 채 눈만 계속 내림.
      경과 시간 슬라이더로 바로 옮길 수 있음. 눈이 그친 뒤엔 시정이 트여 쌓인 모습이 보임 ── */
   let snowT = p.time, snowLast = null;
   tick.add(now => {
@@ -763,8 +766,9 @@ function createEffect(type, ctx, S) {
       return;
     }
     const dt = snowLast == null ? 0 : now - snowLast; snowLast = now;
-    const end = p.hours + p.melt; snowT = Math.min(end, snowT + dt * (snowT < p.hours ? p.hours / 20 : p.melt / 25));
-    const falling = snowT < p.hours;
+    const end = p.hours + p.melt, hold = p.time < p.hours; // hold: 눈 오는 끝에서 멈추고 끌 때까지 계속 내림
+    snowT = Math.min(hold ? p.hours : end, snowT + dt * (snowT < p.hours ? p.hours / 20 : p.melt / 25));
+    const falling = hold || snowT < p.hours;
     if (S.C) S.C.setPrecip(falling);
     S.setLook(falling ? env : { ...env, snow: 0, vis: 40000, gloom: (env.gloom || 0) * .2, tintAmt: (env.tintAmt || 0) * .3 });
     S.look.cover = clamp(Phys.snowDepth(p, snowT) / 15, 0, 1); // 15 cm면 땅이 거의 다 덮임
