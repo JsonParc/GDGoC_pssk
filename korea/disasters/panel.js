@@ -232,6 +232,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters }) {
       if (pr && pr.deep != null) W.setColors(toC(pr.deep), toC(pr.shallow)); else W.setColors(new Cesium.Color(.04, .2, .27, 1), new Cesium.Color(.08, .32, .38, 1));
     };
     $('dx-sky').onchange = e => api.sky(e.target.value);
+    api.sky('tropic-zenith'); // 기본 하늘: 열대 정오
     $('dx-sea').onchange = e => api.sea(e.target.value);
   }).catch(e => console.warn('템플릿 목록', e));
 

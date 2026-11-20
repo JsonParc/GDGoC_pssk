@@ -9,6 +9,8 @@ const region = document.querySelector('#region');
 const credentials = document.querySelector('#credentials');
 const forget = document.querySelector('#forget');
 const storageKey = 'korea-vworld-key';
+// 브이월드가 점검 · 장애로 안 열리면 예비 지도(같은 재난 패널 · 효과, 공개 지형 · 영상 · OSM 건물)로 자동 전환
+const toBackup = reason => { if (new URLSearchParams(location.search).has('nofallback')) return; console.warn('브이월드 실패 → 예비 지도:', reason); location.replace('./backup.html?fallback=1'); };
 // 브라우저에 저장한 키가 없으면 config.js의 배포용 키
 const vworldKey = () => localStorage.getItem(storageKey) || window.KOREA_VWORLD_KEY || '';
 const regions = {
@@ -44,7 +46,8 @@ function start() {
   });
 
   const timer = setTimeout(() => {
-    status.textContent = '브이월드 응답이 지연되고 있습니다. 키, 등록 도메인 및 네트워크를 확인하세요.';
+    status.textContent = '브이월드 응답이 지연되고 있습니다. 예비 지도로 전환합니다…';
+    setTimeout(() => toBackup('timeout'), 1500);
   }, 20000);
 
   vw.ws3dInitCallBack = () => {
@@ -78,8 +81,10 @@ if (vworldKey()) {
   forget.hidden = false;
   status.textContent = '브이월드 지도를 불러오는 중…';
   try {
+    if (window.vworldIsValid === 'false') throw new Error(window.vworldErrMsg || '브이월드 인증 실패');
     start();
   } catch (error) {
-    status.textContent = error.message;
+    status.textContent = error.message + ' 예비 지도로 전환합니다…';
+    setTimeout(() => toBackup(error.message), 1500);
   }
 }

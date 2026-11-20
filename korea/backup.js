@@ -1,7 +1,8 @@
-// 브이월드 키 없이 재난 효과를 시험하는 지도. vworld.js와 같은 순서로 컨트롤 · 재난 패널을 붙임
+// 예비 지도 (브이월드 점검 · 장애 때). vworld.js와 같은 순서로 컨트롤 · 재난 패널을 붙이고 OpenStreetMap 3D 건물을 세움
 import { demTiles, demZoom, getElevation } from './dem.js';
 import { enableDisasterControls } from './disasters/controls.js';
 import { attachDisasterPanel } from './disasters/panel.js';
+import { createOsmBuildings } from './disasters/osm-buildings.js';
 
 const { Cesium } = window;
 Cesium.Ion.defaultAccessToken = '';
@@ -56,10 +57,12 @@ viewer.scene.globe.depthTestAgainstTerrain = true;
 viewer.clock.currentTime = Cesium.JulianDate.fromIso8601(new URLSearchParams(location.search).get('time') || '2026-05-15T03:00:00Z');
 viewer.scene.globe.enableLighting = true;
 const params = new URLSearchParams(location.search);
-const [lng, lat, h, pitch] = (params.get('view') || '129.165,35.13,2600,-30').split(',').map(Number);
+const [lng, lat, h, pitch] = (params.get('view') || '126.978,37.552,1050,-30').split(',').map(Number);
 viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(lng, lat, h), orientation: { heading: Cesium.Math.toRadians(+(params.get('heading') || 0)), pitch: Cesium.Math.toRadians(pitch), roll: 0 } });
 
 const disasters = enableDisasterControls(viewer, Cesium);
 const disasterPanel = attachDisasterPanel({ viewer, Cesium, disasters });
+createOsmBuildings(viewer, Cesium);
+if (params.get('fallback')) document.querySelector('#why').textContent = '브이월드 지도를 불러오지 못해(점검 · 장애) 예비 지도로 열었습니다. ';
 window.koreaVWorld = { viewer, getElevation, disasters, disasterPanel };
 window.dispatchEvent(new Event('korea-vworld-ready'));
