@@ -11,8 +11,11 @@
    - 지진: 카메라 흔들림(카메라 위치의 지반 가속도) + 진도별 영향 반경 원
    - 산불: 바람 쪽으로 늘어진 타원 화선(빛나는 선) · 불탄 자리 · 불꽃 · 연기 입자(ParticleSystem, 실제 m)  */
 import { getElevation } from '../dem.js';
+import { createBuildingFX } from './buildings.js';
+import { createWaterLayer } from './water.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v)), lerp = (a, b, t) => a + (b - a) * t, sm = x => x * x * (3 - 2 * x);
+const smoothstep01 = (a, b, x) => sm(clamp((x - a) / (b - a), 0, 1));
 const DX = () => window.DisasterFX;
 
 function sprite(stops, size = 64) {
@@ -44,6 +47,11 @@ const ATMOS_FS = `uniform sampler2D colorTexture; uniform sampler2D depthTexture
     vec3 c = mix(col.rgb*(1. - .5*u_gloom), fogC, fogK);
     gl_FragColor = vec4(c, col.a);
   }`;
+// 지진 화면 흔들림: 카메라를 움직이면 Cesium이 '이동 중'으로 보고 건물 타일 요청을 멈춰서(cullRequestsWhileMoving) 화면 이미지만 흔듦
+const SHAKE_FS = `uniform sampler2D colorTexture; varying vec2 v_textureCoordinates; uniform vec3 u_shake;
+  void main(){ vec2 c = v_textureCoordinates - .5; float s = sin(u_shake.z), k = cos(u_shake.z);
+    vec2 uv = vec2(c.x*k - c.y*s, c.x*s + c.y*k)*(1. - 2.*length(u_shake.xy) - abs(u_shake.z)) + .5 + u_shake.xy;
+    gl_FragColor = texture2D(colorTexture, clamp(uv, 0., 1.)); }`;
 const RAIN_FS = `uniform sampler2D colorTexture; varying vec2 v_textureCoordinates; uniform float u_rain; uniform float u_angle; uniform float u_time;
   float hash(float x){ return fract(sin(x*133.3)*13.13); }
   void main(){
@@ -89,12 +97,65 @@ const COVER_FS = `uniform sampler2D colorTexture; uniform sampler2D depthTexture
     gl_FragColor = vec4(mix(col.rgb, vec3(.93, .95, .99)*lit, s), col.a);
   }`;
 
+/* 하늘 템플릿 (템플릿 뷰어의 하늘 사진 15종): 하늘 픽셀(깊이 없음)만 반구-팔면체 사진으로 바꿈.
+   사진 속 해 방위를 Cesium 실제 해 방위에 맞춰 돌림 (atmosphere.js와 같은 매핑) */
+const SKY_FS = `uniform sampler2D colorTexture; uniform sampler2D depthTexture; uniform sampler2D u_sky; varying vec2 v_textureCoordinates;
+  uniform mat3 u_toLocal; uniform vec2 u_texSun; uniform float u_tint; uniform float u_gain; uniform vec3 u_hor; uniform vec3 u_zen; uniform float u_on; uniform float u_dim;
+  uniform float u_cover; uniform float u_gloom; uniform vec2 u_wind; uniform float u_time;
+  float hh(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y)*p3.z); }
+  float nn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3. - 2.*f); return mix(mix(hh(i), hh(i + vec2(1, 0)), f.x), mix(hh(i + vec2(0, 1)), hh(i + vec2(1, 1)), f.x), f.y); }
+  float fbm(vec2 p){ float v = 0., a = .5; for (int i = 0; i < 5; i++) { v += a*nn(p); p = mat2(.8, .6, -.6, .8)*p*2.03 + 17.1; a *= .5; } return v; }
+  void main(){
+    vec4 col = texture2D(colorTexture, v_textureCoordinates);
+    if ((u_on <= 0. && u_cover <= 0.) || czm_readDepth(depthTexture, v_textureCoordinates) < 1.) { gl_FragColor = col; return; }
+    // 시선 방향은 가까운 면(−1)에서: 먼 면은 Cesium에서 아주 멀어 정밀도가 깨져 화면이 지지직거림
+    vec4 e = czm_inverseProjection*vec4(v_textureCoordinates*2. - 1., -1., 1.);
+    vec3 l = u_toLocal*(czm_inverseView*vec4(normalize(e.xyz/e.w), 0.)).xyz, d = normalize(vec3(l.x, l.z, -l.y));
+    vec3 sl = u_toLocal*czm_sunDirectionWC;
+    float th = atan(u_texSun.y, u_texSun.x) - atan(-sl.y, sl.x);
+    vec2 rot = vec2(cos(th), sin(th));
+    vec3 r = vec3(d.x*rot.x - d.z*rot.y, max(d.y, 0.), d.x*rot.y + d.z*rot.x);
+    vec2 p = r.xz/(abs(r.x) + r.y + abs(r.z) + 1e-6), uv = vec2(p.x + p.y, p.x - p.y)*.5 + .5;
+    vec3 tc = mix(texture2D(u_sky, vec2(uv.x, 1. - uv.y)).rgb*u_gain, mix(u_hor, u_zen, pow(max(d.y, 0.), .45)), u_tint)*u_dim;
+    vec3 c = mix(col.rgb, tc, u_on*smoothstep(-.02, .04, d.y));
+    // 날씨 구름: 바람 따라 흐르고, 비 · 눈 · 태풍이면 짙고 어둡게 덮임 (템플릿 뷰어 하늘 셰이더와 같은 방식)
+    if (u_cover > 0. && d.y > 0.) {
+      vec2 q = d.xz/(d.y + .08)*1.3 + u_wind*u_time*.004;
+      float n = fbm(q), cv = smoothstep(.55 - u_cover*.6, .8 - u_cover*.55, n);
+      float lit = fbm(q*1.9 + vec2(4.3, 1.7) + sl.xy*.15);
+      vec3 cl = mix(vec3(.42, .45, .5), vec3(.95, .96, .98), smoothstep(.3, .75, lit))*(1. - .65*u_gloom);
+      float over = smoothstep(.55, 1., u_cover);                      // 아주 짙으면 하늘 전체가 흐린 회색
+      c = mix(c, cl, clamp(cv*smoothstep(0., .2, d.y) + over*.85, 0., 1.)*.95);
+    }
+    gl_FragColor = vec4(c, col.a);
+  }`;
+
 /* ───── 공유: 후처리 · 바다 · 해수면 ───── */
 function createShared(viewer, Cesium) {
   const scene = viewer.scene, t0 = performance.now(), time = () => (performance.now() - t0) / 1000;
   const look = { vis: 40000, tint: new Cesium.Cartesian3(.75, .77, .8), tintAmt: 0, gloom: 0, heat: 0, rain: 0, snow: 0, cover: 0, wind: 0, dir: 0 };
   const cur = { ...look, tint: look.tint.clone() }; // 부드럽게 바뀌도록 따라감
   const upEC = new Cesium.Cartesian3(), scratch = new Cesium.Cartesian3();
+  const MA = window.MapAtmosphere;
+  const sky = { id: null, on: 0, texSun: new Cesium.Cartesian2(1, 0), tint: 0, gain: 1, hor: new Cesium.Cartesian3(.7, .75, .8), zen: new Cesium.Cartesian3(.2, .4, .7) };
+  const toLocal = new Cesium.Matrix3(), enuM = new Cesium.Matrix4();
+  const skyStage = new Cesium.PostProcessStage({ fragmentShader: SKY_FS, uniforms: {
+    u_sky: '../data/sky/clear-noon.jpg', u_on: () => sky.on, u_texSun: () => sky.texSun, u_tint: () => sky.tint, u_gain: () => sky.gain, u_hor: () => sky.hor, u_zen: () => sky.zen,
+    u_dim: () => 1 - .5 * cur.gloom, u_cover: () => cur.clouds, u_gloom: () => cur.gloom, u_time: time,
+    u_wind: () => { const a = (cur.dir + 180) * Math.PI / 180, w = Math.max(3, cur.wind); return new Cesium.Cartesian2(Math.sin(a) * w, -Math.cos(a) * w); },
+    u_toLocal: () => { Cesium.Transforms.eastNorthUpToFixedFrame(viewer.camera.positionWC, Cesium.Ellipsoid.WGS84, enuM); return Cesium.Matrix3.transpose(Cesium.Matrix4.getMatrix3(enuM, toLocal), toLocal); },
+  } });
+  skyStage.enabled = false; scene.postProcessStages.add(skyStage);
+  const hex3 = h => { const c = Cesium.Color.fromCssColorString('#' + h.toString(16).padStart(6, '0')); return new Cesium.Cartesian3(c.red, c.green, c.blue); };
+  function setSky(id) {
+    const def = id && MA && MA.SKY[id];
+    sky.id = def ? id : null; if (!def) sky.on = 0;
+    if (!def) return;
+    skyStage.uniforms.u_sky = `../data/sky/${id}.jpg`;
+    sky.texSun = new Cesium.Cartesian2(def.sun[0], def.sun[1]); sky.tint = def.tint || 0; sky.gain = def.gain || 1; sky.hor = hex3(def.horizon); sky.zen = hex3(def.zenith);
+  }
+  // 바다 · 강 · 호수 물 표면 (OpenFreeMap 물 다각형)
+  let W = null; try { W = createWaterLayer(viewer, Cesium); } catch (e) { console.warn('물 표면을 쓸 수 없습니다', e); }
   const stages = {
     cover: new Cesium.PostProcessStage({ fragmentShader: COVER_FS, uniforms: { u_cover: () => cur.cover, u_upEC: () => {
       const n = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(viewer.camera.positionWC, scratch);
@@ -102,9 +163,11 @@ function createShared(viewer, Cesium) {
     } } }),
     atmos: new Cesium.PostProcessStage({ fragmentShader: ATMOS_FS, uniforms: { u_vis: () => cur.vis, u_tint: () => cur.tint, u_tintAmt: () => cur.tintAmt, u_gloom: () => cur.gloom, u_heat: () => cur.heat, u_time: time, u_camH: () => camH, u_layer: () => 1200 } }),
     rain: new Cesium.PostProcessStage({ fragmentShader: RAIN_FS, uniforms: { u_rain: () => cur.rain * inLayer(), u_time: time, u_angle: () => rainAngle() } }),
+    shake: new Cesium.PostProcessStage({ fragmentShader: SHAKE_FS, uniforms: { u_shake: () => shake } }),
     snow: new Cesium.PostProcessStage({ fragmentShader: SNOW_FS, uniforms: { u_snow: () => cur.snow * inLayer(), u_time: time, u_wind: () => clamp(cur.wind / 15, 0, 1.5) * windSide() } }),
   };
   for (const s of Object.values(stages)) { s.enabled = false; scene.postProcessStages.add(s); }
+  const shake = new Cesium.Cartesian3(); // 화면 흔들림 (x, y 화면 비율, z 회전 rad)
   // 카메라의 지면 위 높이: 비 · 눈 층(1.2 km) 위로 올라가면 화면 빗줄기를 줄임
   let camH = 100;
   const inLayer = () => .25 + .75 * clamp(1500 / Math.max(camH, 1), 0, 1);
@@ -115,10 +178,15 @@ function createShared(viewer, Cesium) {
   scene.preRender.addEventListener((_, now) => {
     const cc = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC); if (cc) camH = Math.max(1, cc.height - (scene.globe.getHeight(cc) ?? 0));
     const k = .05;
-    for (const key of ['vis', 'tintAmt', 'gloom', 'heat', 'rain', 'snow', 'cover', 'wind']) cur[key] = lerp(cur[key], look[key], key === 'cover' ? .02 : k);
+    for (const key of ['vis', 'tintAmt', 'gloom', 'heat', 'rain', 'snow', 'cover', 'wind']) cur[key] = lerp(cur[key], look[key], key === 'cover' ? .08 : k);
     cur.dir = look.dir; Cesium.Cartesian3.lerp(cur.tint, look.tint, k, cur.tint);
     stages.atmos.enabled = cur.vis < 39000 || cur.gloom > .01 || cur.tintAmt > .01 || cur.heat > .01;
+    stages.shake.enabled = Math.abs(shake.x) + Math.abs(shake.y) + Math.abs(shake.z) > 1e-5;
     stages.rain.enabled = cur.rain > .01; stages.snow.enabled = cur.snow > .01; stages.cover.enabled = cur.cover > .005;
+    cur.clouds = lerp(cur.clouds || 0, clamp(cur.gloom * 1.3 + cur.rain * .6 + cur.snow * .6, 0, 1), .03);
+    skyStage.enabled = !!sky.id || cur.clouds > .02;
+    if (sky.id) sky.on = (camH < 60000 ? 1 : 0) * (1 - inLayer() * (1 - smoothstep01(1500, 30000, cur.vis)) * .9) * (1 - .6 * clamp(cur.rain + cur.snow, 0, 1));
+    if (W) W.setSeaRise(seaRise || 0);
     for (const f of tickers) f(time());
   });
   viewer.scene.requestRenderMode = false; // 효과는 매 프레임 움직임
@@ -146,6 +214,7 @@ function createShared(viewer, Cesium) {
     await Promise.all(jobs);
     hs.sort((x, y) => x - y);
     seaN = hs.length >= 3 ? clamp(hs[hs.length >> 1], -5, 60) : (seaN ?? 0);
+    if (W) W.setSeaLevel(seaN);
     return seaN;
   }
 
@@ -170,6 +239,87 @@ function createShared(viewer, Cesium) {
       setColor(c) { prim.appearance.material.uniforms.baseWaterColor = c; },
       destroy() { scene.primitives.remove(prim); },
     };
+  }
+
+  /* 이어진 침수면: 발생 지점 둘레 2·half m를 N×N 칸으로 나눠 지도 지형 높이를 재고,
+     물이 들어오는 곳(base = 'sea': 해수면 이하 칸 = 근처 바다 / 'point': 발생 지점 칸)에서 시작해
+     maxLevel보다 낮고 이어진 칸만 채움 (둑 · 언덕 너머 막힌 저지대는 안 잠김). 물 가장자리는 지형이 가려 지형 모양 그대로.
+     표면은 높이 0으로 만들고 setHeight로 올림 (해일처럼 수위가 바뀌어도 다시 계산 안 함) */
+  async function floodSurface({ longitude, latitude, half, base, maxLevel, color, N = 128 }) {
+    const enu = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(longitude, latitude));
+    const at = (x, y) => Cesium.Cartographic.fromCartesian(Cesium.Matrix4.multiplyByPoint(enu, new Cesium.Cartesian3(x, y, 0), new Cesium.Cartesian3()));
+    const cell = 2 * half / N, cartos = [];
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) cartos.push(at((i + .5) * cell - half, (j + .5) * cell - half));
+    const tp = viewer.terrainProvider;
+    let hs;
+    try { hs = (await (tp.availability ? Cesium.sampleTerrainMostDetailed(tp, cartos) : Cesium.sampleTerrain(tp, 13, cartos))).map(c => c.height); }
+    catch { hs = cartos.map(c => scene.globe.getHeight(c) ?? 0); }
+    const H = Float32Array.from(hs, v => Number.isFinite(v) ? v : 0), fill = new Uint8Array(N * N), sea = new Uint8Array(N * N), queue = [];
+    const seaH = seaN ?? 0;
+    if (base === 'point') { const k = (N >> 1) * N + (N >> 1); if (H[k] < maxLevel) { fill[k] = 1; queue.push(k); } }
+    else for (let k = 0; k < N * N; k++) if (H[k] <= seaH + .3) { sea[k] = fill[k] = 1; queue.push(k); }
+    while (queue.length) {
+      const k = queue.pop(), i = k % N, j = (k - i) / N;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= N || b >= N) continue;
+        const n = b * N + a; if (fill[n] || H[n] >= maxLevel) continue;
+        fill[n] = 1; queue.push(n);
+      }
+    }
+    // 그릴 칸: 잠긴 육지 칸 + 한 칸 둘레 (가장자리는 지형이 가림). 바다 칸은 지도 바다 표면이 맡음
+    const draw = new Uint8Array(N * N); let count = 0;
+    for (let k = 0; k < N * N; k++) if (fill[k] && !sea[k]) {
+      const i = k % N, j = (k - i) / N;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < N && b < N && !draw[b * N + a]) { draw[b * N + a] = 1; count++; } }
+    }
+    const out = { count, setHeight() {}, destroy() {} };
+    if (!count) return out;
+    // 칸마다 사각형 두 개 (꼭짓점은 칸 모서리, 타원체 높이 0)
+    const pos = new Float64Array(count * 12), st = new Float32Array(count * 8), idx = new Uint32Array(count * 6); let q = 0;
+    const corner = (x, y) => Cesium.Matrix4.multiplyByPoint(enu, new Cesium.Cartesian3(x, y, 0), new Cesium.Cartesian3());
+    for (let k = 0; k < N * N; k++) if (draw[k]) {
+      const i = k % N, j = (k - i) / N, x0 = i * cell - half, y0 = j * cell - half;
+      [[x0, y0], [x0 + cell, y0], [x0 + cell, y0 + cell], [x0, y0 + cell]].forEach(([x, y], v) => {
+        const c = Cesium.Cartographic.fromCartesian(corner(x, y)), p0 = Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, 0);
+        pos.set([p0.x, p0.y, p0.z], (q * 4 + v) * 3); st.set([(x + half) / (2 * half), (y + half) / (2 * half)], (q * 4 + v) * 2);
+      });
+      idx.set([q * 4, q * 4 + 1, q * 4 + 2, q * 4, q * 4 + 2, q * 4 + 3], q * 6); q++;
+    }
+    const geometry = new Cesium.Geometry({
+      attributes: { position: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
+        st: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 2, values: st }) },
+      indices: idx, primitiveType: Cesium.PrimitiveType.TRIANGLES, boundingSphere: Cesium.BoundingSphere.fromVertices(pos),
+    });
+    const prim = scene.primitives.add(new Cesium.Primitive({
+      geometryInstances: new Cesium.GeometryInstance({ geometry }), asynchronous: false, compressVertices: false,
+      appearance: new Cesium.EllipsoidSurfaceAppearance({ aboveGround: true, translucent: false, material: Cesium.Material.fromType('Water', {
+        baseWaterColor: color, blendColor: Cesium.Color.fromAlpha(color, 1), normalMap: Cesium.buildModuleUrl('Assets/Textures/waterNormals.jpg'),
+        frequency: 5000, animationSpeed: .015, amplitude: 4, specularIntensity: .7 }) }),
+    }));
+    const normal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(Cesium.Cartesian3.fromDegrees(longitude, latitude), new Cesium.Cartesian3()), off = new Cesium.Cartesian3();
+    out.setHeight = h => { prim.show = Number.isFinite(h); if (prim.show) prim.modelMatrix = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(normal, h, off)); };
+    out.setColor = c => { prim.appearance.material.uniforms.baseWaterColor = c; };
+    out.destroy = () => scene.primitives.remove(prim);
+    out.ground = H[(N >> 1) * N + (N >> 1)];
+    return out;
+  }
+
+  /* 땅 위 선: 브이월드 Cesium 빌드에는 땅에 붙는 선(clampToGround)용 작업 파일(createGroundPolylineGeometry)이 없어
+     그리면 렌더링이 멈춤 → 지형 높이를 재서 그 위 3 m에 일반 선(PolylineCollection, 작업 파일 필요 없음)으로 그림 */
+  function groundLine({ positions = [], color, width = 3, glow = false, dash = false }) {
+    const col = scene.primitives.add(new Cesium.PolylineCollection());
+    const material = glow ? Cesium.Material.fromType('PolylineGlow', { color, glowPower: .3 }) : dash ? Cesium.Material.fromType('PolylineDash', { color }) : Cesium.Material.fromType('Color', { color });
+    const line = col.add({ positions: [], width, material });
+    let req = 0;
+    function setPositions(list) {
+      const r = ++req, cartos = list.map(p => Cesium.Cartographic.fromCartesian(p));
+      const lift = c => Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, (Number.isFinite(c.height) ? c.height : 0) + 3);
+      line.positions = cartos.map(c => lift(new Cesium.Cartographic(c.longitude, c.latitude, scene.globe.getHeight(c) ?? 0)));
+      const tp = viewer.terrainProvider;
+      Promise.resolve(tp.availability ? Cesium.sampleTerrainMostDetailed(tp, cartos) : Cesium.sampleTerrain(tp, 13, cartos)).then(res => { if (r === req && !col.isDestroyed()) line.positions = res.map(lift); }).catch(() => {});
+    }
+    if (positions.length) setPositions(positions);
+    return { setPositions, set show(v) { col.show = v; }, destroy() { if (!col.isDestroyed()) scene.primitives.remove(col); } };
   }
 
   /* 바다 물결: 카메라 둘레 60 km를 실제 해수면 높이로 덮음 (육지는 지형이 가림). 카메라가 25 km 넘게 움직이면 옮김 */
@@ -202,7 +352,7 @@ function createShared(viewer, Cesium) {
     return out;
   };
 
-  return { look, cur, get camH() { return camH; }, setLook, seaLevelAt, get seaLevel() { return seaN; }, water, setOcean, set seaRise(v) { seaRise = v; }, tickers, time, ringPositions };
+  return { shake, groundLine, floodSurface, look, cur, setSky, get sky() { return sky.id; }, W, get camH() { return camH; }, setLook, seaLevelAt, get seaLevel() { return seaN; }, water, setOcean, set seaRise(v) { seaRise = v; }, tickers, time, ringPositions };
 }
 
 /* ───── 재난별 효과 ───── */
@@ -213,6 +363,7 @@ function createEffect(type, ctx, S) {
   function normalize(q = {}) {
     const o = {}; for (const d of def.params) o[d.key] = clamp(Number.isFinite(+q[d.key]) ? +q[d.key] : d.value, d.min, d.max);
     o.polygon = Array.isArray(q.polygon) && q.polygon.length >= 3 ? q.polygon : null; // 지도에 그린 영역 [[경도, 위도], …]
+    o.waterBase = q.waterBase === 'point' || q.waterBase === 'sea' ? q.waterBase : (type === 'flood' ? 'point' : 'sea'); // 물 기준: 근처 바다 / 이 지점
     return o;
   }
   const parts = [], entities = [], tick = new Set(), add = e => (entities.push(viewer.entities.add(e)), entities[entities.length - 1]);
@@ -226,11 +377,35 @@ function createEffect(type, ctx, S) {
     tsunami: { radius: 30000, color: new Cesium.Color(.27, .27, .2, .93), base: 'sea' },
     sealevel: { radius: 50000, color: new Cesium.Color(.06, .25, .33, .9), base: 'sea' },
   }[type];
-  let water = null;
-  if (waterSpec) { water = S.water({ longitude, latitude, ...waterSpec, polygon: type === 'flood' ? p.polygon : null }); parts.push(water); }
+  let water = null, waterKey = '', waterReq = 0, waterTimer = 0;
+  // 기준 높이: 근처 바다면 해수면, 이 지점이면 선택 지점 지형
+  const baseH = () => p.waterBase === 'point' ? groundHeight : sea;
+  const waterAmount = () => type === 'tsunami' ? p.height * p.runup : (env.water || 0);
+  async function buildWater() {
+    const req = ++waterReq;
+    let w;
+    if (type === 'flood' && p.polygon) w = S.water({ longitude, latitude, ...waterSpec, polygon: p.polygon }); // 직접 그린 영역
+    else w = await S.floodSurface({ longitude, latitude, half: type === 'flood' ? 4000 : 9000, base: p.waterBase, maxLevel: baseH() + waterAmount() + .01, color: waterSpec.color });
+    if (req !== waterReq || !alive) { w.destroy(); return; }
+    if (water) water.destroy(); water = w;
+    if (type !== 'tsunami') water.setHeight(baseH() + waterAmount());
+  }
+  function scheduleWater() {
+    if (!waterSpec) return;
+    const key = [p.waterBase, (baseH() + waterAmount()).toFixed(1), p.polygon ? p.polygon.length : 0, sea].join('|');
+    if (key === waterKey) return; waterKey = key;
+    clearTimeout(waterTimer); waterTimer = setTimeout(buildWater, 350); // 슬라이더를 끄는 동안은 기다렸다가 한 번
+  }
 
+  /* 건물 영향 (지진 · 물 · 산불): 발생 지점 둘레 지면 높이를 잰 뒤 켬 */
+  const B = S.B, usesB = !!B && ['quake', 'tsunami', 'sealevel', 'flood', 'typhoon', 'wildfire'].includes(type);
+  let bReady = false, maxLv = -1e9;
+  if (usesB) {
+    const half = type === 'quake' ? 12000 : type === 'wildfire' ? clamp(Math.sqrt(p.area * 1e4) * 1.3 + 1500, 3000, 15000) : 8000;
+    B.begin(longitude, latitude, half).then(() => { bReady = true; if (alive) apply(); }).catch(e => console.warn(e));
+  }
   /* 지진: 진도 반경 원 + 카메라 위치의 흔들림 */
-  let quake = null;
+  let quake = null; const quakeLines = [];
   /* 산불 */
   let fire = null;
 
@@ -238,24 +413,26 @@ function createEffect(type, ctx, S) {
     env = def.env(p);
     // 산불: 연기는 입자로 직접 보이므로 화면 전체 연무는 옅게 (후처리 안개가 반투명 입자 위에 덮여 연기를 가리지 않게)
     S.setLook(type === 'wildfire' ? { ...env, vis: Math.max(env.vis, 30000), tintAmt: (env.tintAmt || 0) * .4, gloom: 0 } : env);
-    if (water) {
-      const lv = type === 'flood' ? groundHeight + (env.water || 0) : type === 'tsunami' ? null : sea + (env.water || 0);
-      if (lv != null) water.setHeight(lv);
+    if (waterSpec) {
+      if (type !== 'tsunami') { const lv = baseH() + waterAmount(); if (water) water.setHeight(lv); if (bReady) B.water(lv, false); }
+      scheduleWater();
     }
-    if (type === 'sealevel') S.seaRise = p.rise; else S.seaRise = 0;
+    // 지도 바다 표면도 같이 올림: 해수면 상승(+ 폭풍해일) · 태풍 폭풍해일 (해일은 아래 tick에서 매 프레임)
+    S.seaRise = p.waterBase === 'point' ? 0 : type === 'sealevel' ? p.rise + p.surge : type === 'typhoon' ? (env.water || 0) : 0;
     if (type === 'quake') buildQuake();
     if (type === 'wildfire') buildFire();
-    if (type === 'snow') snowStart = S.time();
+    if (type === 'snow') snowT = p.time;
   }
 
   /* ── 지진 ── */
   function buildQuake() {
     for (const e of entities.splice(0)) viewer.entities.remove(e);
+    for (const l of quakeLines.splice(0)) l.destroy();
     const M = p.M, depth = p.depth, colors = { 5: '#9be564', 6: '#f2d544', 7: '#f59a32', 8: '#e8562c', 9: '#b0182c' };
     const radiusFor = lvl => { let lo = 0, hi = 2000; if (Phys.mmi(Phys.pga(M, depth, 0)) < lvl) return 0; for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (Phys.mmi(Phys.pga(M, depth, m)) >= lvl) lo = m; else hi = m; } return lo; };
     for (const lvl of [9, 8, 7, 6, 5]) {
       const r = radiusFor(lvl) * 1000; if (r < 50) continue;
-      add({ polyline: { positions: S.ringPositions(longitude, latitude, r), clampToGround: true, width: 3, material: Cesium.Color.fromCssColorString(colors[lvl]).withAlpha(.9) } });
+      quakeLines.push(S.groundLine({ positions: S.ringPositions(longitude, latitude, r, r, 0, 0, 0, 160), color: Cesium.Color.fromCssColorString(colors[lvl]).withAlpha(.9), width: 3 }));
       add({ position: Cesium.Cartesian3.fromDegrees(longitude, latitude + r / 111320, 0), label: { text: `진도 ${['', 'Ⅰ', 'Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ', 'Ⅵ', 'Ⅶ', 'Ⅷ', 'Ⅸ'][lvl]} (${(r / 1000).toFixed(1)} km)`, font: '600 13px system-ui', fillColor: Cesium.Color.WHITE,
         outlineColor: Cesium.Color.BLACK, outlineWidth: 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
     }
@@ -266,14 +443,14 @@ function createEffect(type, ctx, S) {
   tick.add(now => {
     if (type !== 'quake' || !quake) return;
     const cam = viewer.camera;
-    cam.lookRight(-shakePrev.x); cam.lookUp(-shakePrev.y); cam.twistRight(-shakePrev.z);
     // 카메라 아래 지점과 진앙 사이 거리로 그 자리 지반 가속도
     const c = Cesium.Cartographic.fromCartesian(cam.positionWC);
     const d = c ? Cesium.Cartesian3.distance(Cesium.Cartesian3.fromRadians(c.longitude, c.latitude), Cesium.Cartesian3.fromDegrees(longitude, latitude)) / 1000 : p.dist;
     const pga = Phys.pga(p.M, p.depth, d), dur = clamp(Phys.shakeSeconds(p.M), 3, 60), cyc = dur + 4, ph = ((now - quake.t0) % cyc) / dur;
     const envl = ph > 1 ? 0 : Math.min(1, ph / .12) * Math.pow(1 - ph, .6), a = clamp(pga, 0, 2) * envl * .03, w = now * 2 * Math.PI * 1.5;
     shakePrev = { x: Math.sin(w * 1.1) * a, y: Math.sin(w * .9 + 3) * a, z: Math.sin(w * 1.4 + 5) * a * .5 };
-    cam.lookRight(shakePrev.x); cam.lookUp(shakePrev.y); cam.twistRight(shakePrev.z);
+    if (bReady) { if (!quake.ready) { quake.ready = true; quake.t0 = now; } B.quake({ t: now - quake.t0, env: envl, M: p.M, depth: p.depth, dur, exag: p.exag ?? 10 }); } // 건물 준비되면 처음부터
+    S.shake.x = shakePrev.x * .5; S.shake.y = shakePrev.y * .5; S.shake.z = shakePrev.z;
   });
 
   /* ── 산불: 그린 영역(없으면 바람 쪽으로 늘어진 타원, 면적 = 피해 면적)을 발화점에서 바깥으로 태움 (30초 타임랩스) ──
@@ -297,7 +474,7 @@ function createEffect(type, ctx, S) {
   function clearFire() {
     if (!fire) return;
     scene.primitives.remove(fire.bbs); for (const ps of fire.smoke) scene.primitives.remove(ps);
-    viewer.entities.remove(fire.scar); viewer.entities.remove(fire.front); fire = null;
+    fire.scar.destroy(); fire.front.destroy(); fire = null;
   }
   function buildFire() {
     clearFire();
@@ -334,8 +511,16 @@ function createEffect(type, ctx, S) {
     // 불탄 자리 · 화선 (영역을 발화점 기준 g배로 줄인 모양)
     const ring = g => poly.map(([x, y]) => { const c = toCarto(o[0] + (x - o[0]) * g, o[1] + (y - o[1]) * g); return Cesium.Cartesian3.fromRadians(c.longitude, c.latitude); });
     const r0 = ring(.05);
-    const scar = viewer.entities.add({ polygon: { hierarchy: new Cesium.PolygonHierarchy(r0), material: Cesium.Color.fromBytes(16, 12, 10, 165), classificationType: Cesium.ClassificationType.BOTH } });
-    const front = viewer.entities.add({ polyline: { positions: [...r0, r0[0]], clampToGround: true, width: 7, material: new Cesium.PolylineGlowMaterialProperty({ glowPower: .3, color: Cesium.Color.fromCssColorString('#ff8a2a') }) } });
+    // 불탄 자리: 땅 · 건물에 덮는 다각형. 브이월드 빌드엔 다각형 작업 파일이 없어 바로 만드는 GroundPrimitive로 (자랄 때마다 새로)
+    const scarColor = Cesium.ColorGeometryInstanceAttribute.fromColor(Cesium.Color.fromBytes(16, 12, 10, 165));
+    const scar = { prim: null, set(r) {
+      const prim = scene.groundPrimitives.add(new Cesium.GroundPrimitive({ asynchronous: false, classificationType: Cesium.ClassificationType.BOTH,
+        geometryInstances: new Cesium.GeometryInstance({ geometry: new Cesium.PolygonGeometry({ polygonHierarchy: new Cesium.PolygonHierarchy(r) }), attributes: { color: scarColor } }),
+        appearance: new Cesium.PerInstanceColorAppearance({ flat: true, translucent: true }) }));
+      if (this.prim) scene.groundPrimitives.remove(this.prim); this.prim = prim;
+    }, destroy() { if (this.prim) scene.groundPrimitives.remove(this.prim); this.prim = null; } };
+    scar.set(r0);
+    const front = S.groundLine({ positions: [...r0, r0[0]], color: Cesium.Color.fromCssColorString('#ff8a2a'), width: 9, glow: true });
     // 연기 (입자): 화선 근처 불타는 점을 따라 옮김. 바람(m/s) 쪽으로 흐름
     const windVec = new Cesium.Cartesian3(), wind = () => { const a = (q.dir + 180) * Math.PI / 180; return Cesium.Matrix4.multiplyByPointAsVector(enu, new Cesium.Cartesian3(Math.sin(a) * q.wind, Math.cos(a) * q.wind, 0), windVec); };
     const smoke = [];
@@ -345,12 +530,20 @@ function createEffect(type, ctx, S) {
       startColor: Cesium.Color.WHITE.withAlpha(.65), endColor: Cesium.Color.WHITE.withAlpha(0), emitter: new Cesium.CircleEmitter(Math.max(60, Math.sqrt(area) * .08)), modelMatrix: Cesium.Matrix4.IDENTITY.clone(),
       updateCallback: (part, dt) => { if (Cesium.Cartesian3.magnitude(part.velocity) < q.wind * 2 + 20) Cesium.Cartesian3.add(part.velocity, Cesium.Cartesian3.multiplyByScalar(wind(), dt * .08, new Cesium.Cartesian3()), part.velocity); },
     })));
-    fire = { t0: S.time(), bbs, pts, scar, front, smoke, ring, layout: -1 };
+    fire = { t0: S.time(), bbs, pts, scar, front, smoke, ring, layout: -1, poly, o, box: [minX, minY, Math.max(1, maxX - minX), Math.max(1, maxY - minY)], mapped: false };
   }
   const fc = new Cesium.Color();
   tick.add(now => {
     if (type !== 'wildfire' || !fire) return;
     const g = clamp(.03 + (now - fire.t0) / 30, 0, 1.3), band = .16;
+    if (bReady) {
+      if (!fire.mapped) { // 건물용 불 번짐 지도: 영역 안 칸마다 발화점에서의 상대 거리 (밖 = 1.5)
+        const n = 128, [x0, y0, sx, sy] = fire.box, rel = new Float32Array(n * n);
+        for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) { const q = [x0 + (i + .5) / n * sx, y0 + (j + .5) / n * sy]; rel[j * n + i] = inside(q, fire.poly) ? relOf(q, fire.o, fire.poly) : 1.5; }
+        B.fireMap(rel, n, fire.box); fire.mapped = true;
+      }
+      B.fire(g);
+    }
     for (const pt of fire.pts) {
       const d = g - pt.rel; let a = 0, sc = 1;
       const fl = .55 + .45 * Math.sin(now * (9 + pt.seed % 5) + pt.seed) * Math.sin(now * 4.3 + pt.seed * 1.7);
@@ -361,7 +554,7 @@ function createEffect(type, ctx, S) {
     }
     if (Math.abs(g - fire.layout) < .02 && g < 1) return; fire.layout = g;
     const r = fire.ring(Math.min(g, 1));
-    fire.scar.polygon.hierarchy = new Cesium.PolygonHierarchy(r); fire.front.polyline.positions = [...r, r[0]];
+    fire.scar.set(r); fire.front.setPositions([...r, r[0]]);
     // 연기: 지금 화선 근처에서 타는 점으로
     const burning = fire.pts.filter(pt => g - pt.rel > 0 && g - pt.rel < .3);
     fire.smoke.forEach((ps, i) => { const pt = burning[(i * 37 + Math.floor(g * 10)) % Math.max(1, burning.length)]; if (!pt) return; const c = Cesium.Cartographic.fromCartesian(pt.bb.position); ps.modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, c.height + 40)); });
@@ -377,16 +570,23 @@ function createEffect(type, ctx, S) {
     if (x < 1.6) return .55 * A * Math.sin(Math.PI * (x - 1.05) / .55); return 0; };
   tick.add(now => {
     if (type !== 'tsunami' || !water) return;
+    const sea0 = baseH();
     let tau = (now - tsT0) * p.speed; if (tau > 1.7 * PERIOD) { tsT0 = now; tau = 0; }
-    water.setHeight(sea + Math.max(tsEta(tau, p.height * p.runup), -3));
+    const lv = sea0 + Math.max(tsEta(tau, p.height * p.runup), -3); water.setHeight(lv); S.seaRise = p.waterBase === 'point' ? 0 : lv - sea0;
+    if (bReady && lv > maxLv + .2) { maxLv = lv; B.water(maxLv, true); } // 가장 높이 찼던 물 자국 · 잠긴 층 손상
   });
 
-  /* ── 대설: 쌓인 눈 (30초 동안 누적 적설까지) ── */
-  let snowStart = S.time();
+  /* ── 대설: 경과 시간(h)에 따라 쌓이고(눈 오는 시간 동안) 녹음(녹는 시간 동안). 전체를 45초 타임랩스로 진행,
+     경과 시간 슬라이더로 바로 옮길 수 있음. 눈이 그친 뒤엔 시정이 트여 쌓인 모습이 보임 ── */
+  let snowT = p.time, snowLast = null;
   tick.add(now => {
     if (type !== 'snow') return;
-    const total = p.rate * p.hours, sofar = total * clamp((now - snowStart) / 30, 0, 1);
-    S.look.cover = clamp(sofar / 15, 0, 1); // 15 cm면 땅이 거의 다 덮임
+    const dt = snowLast == null ? 0 : now - snowLast; snowLast = now;
+    const end = p.hours + p.melt; snowT = Math.min(end, snowT + dt * end / 45);
+    const falling = snowT < p.hours;
+    S.setLook(falling ? env : { ...env, snow: 0, vis: 40000, gloom: (env.gloom || 0) * .2, tintAmt: (env.tintAmt || 0) * .3 });
+    S.look.cover = clamp(Phys.snowDepth(p, snowT) / 15, 0, 1); // 15 cm면 땅이 거의 다 덮임
+    S.onProgress && S.onProgress('time', snowT);
   });
 
   for (const f of tick) S.tickers.add(f);
@@ -397,17 +597,21 @@ function createEffect(type, ctx, S) {
     destroy() {
       alive = false;
       for (const f of tick) S.tickers.delete(f);
-      if (shakePrev) { const cam = viewer.camera; cam.lookRight(-shakePrev.x); cam.lookUp(-shakePrev.y); cam.twistRight(-shakePrev.z); }
+      S.shake.x = S.shake.y = S.shake.z = 0;
       for (const x of parts) x.destroy();
+      clearTimeout(waterTimer); if (water) water.destroy();
       for (const e of entities) viewer.entities.remove(e);
+      for (const l of quakeLines) l.destroy();
       clearFire();
       S.setLook({}); S.look.cover = 0; S.seaRise = 0;
+      if (usesB) B.end();
     },
   };
 }
 
 export function registerDisasterEffects(disasters, viewer, Cesium) {
   const S = createShared(viewer, Cesium);
+  try { S.B = createBuildingFX(viewer, Cesium); } catch (e) { console.warn('건물 효과를 쓸 수 없습니다', e); }
   for (const type of Object.keys(DX().TYPES)) if (type !== 'none') disasters.register(type, ctx => createEffect(type, ctx, S));
   return S;
 }

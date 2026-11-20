@@ -10,7 +10,7 @@
   <style>
     body { margin: 0; font: 14px system-ui, sans-serif; }
     #vmap { position: fixed; inset: 0; }
-    #note { position: absolute; z-index: 2; top: 12px; left: 12px; max-width: min(300px, calc(100vw - 360px)); padding: 6px 9px; border-radius: 7px; background: #142720e8; color: #fff; font-size: 12px; }
+    #note { position: absolute; z-index: 2; bottom: 90px; left: 12px; max-width: min(300px, calc(100vw - 24px)); padding: 6px 9px; border-radius: 7px; background: #142720e8; color: #fff; font-size: 12px; }
     #note a { color: #9fe3d2; }
     #disaster-controls { position: absolute; z-index: 2; bottom: 40px; left: 12px; max-width: calc(100vw - 44px); padding: 6px 8px; border-radius: 7px; background: #142720e8; color: #fff; }
     #disaster-controls:not([hidden]) { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -19,6 +19,7 @@
   </style>
   <script src="https://cdn.jsdelivr.net/npm/cesium@1.99.0/Build/Cesium/Cesium.js"></script>
   <script src="../js/disaster.js"></script>
+  <script src="../js/atmosphere.js"></script>
 </head>
 <body>
   <main id="vmap" aria-label="재난 효과 시험 지도"></main>

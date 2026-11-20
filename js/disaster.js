@@ -33,6 +33,8 @@ const Phys = {
   // 시정(m): 비 V ≈ 25·R^-0.63 km (R mm/h), 눈 V ≈ 1.6·S^-0.8 km (S cm/h) — 관측 경험식 근사
   rainVis: r => r < .5 ? 30000 : clamp(25000 * Math.pow(r, -.63), 150, 30000),
   snowVis: s => s < .1 ? 30000 : clamp(1600 * Math.pow(s, -.8), 80, 30000),
+  snowDepth: (p, t) => Math.max(0, p.rate * Math.min(t, p.hours) - Math.max(0, t - p.hours) * p.rate * p.hours / p.melt), // cm
+  collapse: pga => { const z = Math.log(Math.max(pga, 1e-4) / .55) / .64; return 1 / (1 + Math.exp(-1.702 * z)); }, // 완전 파괴 취약도 (HAZUS식 중앙값 0.55 g, β 0.64)
   flameHeight: (wind, dry) => clamp(4 + wind * 1.2, 4, 40) * (.6 + .6 * dry), // m, 지표화 ~ 수관화
 };
 const MMI_KO = ['', 'Ⅰ', 'Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ', 'Ⅵ', 'Ⅶ', 'Ⅷ', 'Ⅸ', 'Ⅹ', 'Ⅺ', 'Ⅻ'];
@@ -65,11 +67,11 @@ const TYPES = {
   },
   quake: {
     name: '지진', icon: '〰', desc: '규모 · 깊이 · 거리로 지반 가속도를 추정하고 그 세기로 화면을 흔듭니다. 재생하면 흔들림 시간만큼 반복합니다.',
-    params: [P('M', '규모', 'M', 3, 9.5, .1, 6.5), P('depth', '진원 깊이', 'km', 1, 100, 1, 10), P('dist', '진앙까지 거리', 'km', 0, 300, 1, 15)],
+    params: [P('M', '규모', 'M', 3, 9.5, .1, 6.5), P('depth', '진원 깊이', 'km', 1, 100, 1, 10), P('dist', '진앙까지 거리', 'km', 0, 300, 1, 15), P('exag', '건물 흔들림 과장 (보기용)', '×', 1, 50, 1, 10)],
     derive(p) {
       const g = Phys.pga(p.M, p.depth, p.dist), mmi = Phys.mmi(g);
       return [['최대 지반 가속도 (PGA)', `${fmt(g, 2)} g`], ['수정 메르칼리 진도', MMI_KO[Math.round(mmi)] + ` (${fmt(mmi, 1)})`],
-        ['강한 흔들림 시간', `${fmt(Phys.shakeSeconds(p.M))} 초`]];
+        ['강한 흔들림 시간', `${fmt(Phys.shakeSeconds(p.M))} 초`], ['건물 붕괴 확률 (이 거리)', `${fmt(Phys.collapse(g) * 100, 1)} %`]];
     },
     env: p => { const g = Phys.pga(p.M, p.depth, p.dist); return { shake: g, shakeSec: Phys.shakeSeconds(p.M), gloom: .08, vis: lerp(20000, 6000, clamp(g, 0, 1)), tint: 0xb4a68a, tintAmt: clamp(g, 0, .5), sea: .25 }; },
   },
@@ -118,10 +120,10 @@ const TYPES = {
   },
   snow: {
     name: '대설 · 한파', icon: '❄', desc: '눈이 바람에 날리고 시야가 하얗게 줄어듭니다.',
-    params: [P('rate', '시간당 적설', 'cm/h', 0, 15, .5, 3), P('hours', '지속 시간', 'h', 1, 48, 1, 8), P('wind', '풍속', 'm/s', 0, 25, .5, 6), P('temp', '기온', '°C', -30, 2, .5, -6)],
+    params: [P('rate', '시간당 적설', 'cm/h', 0, 15, .5, 3), P('hours', '눈 오는 시간', 'h', 1, 48, 1, 8), P('melt', '다 녹는 데 걸리는 시간', 'h', 1, 240, 1, 48), P('time', '경과 시간', 'h', 0, 300, 1, 0), P('wind', '풍속', 'm/s', 0, 25, .5, 6), P('temp', '기온', '°C', -30, 2, .5, -6)],
     derive(p) {
-      const total = p.rate * p.hours;
-      return [['누적 적설', `${fmt(total, 1)} cm`], ['시정 (눈)', `${fmt(Phys.snowVis(p.rate) / (1 + p.wind / 15) / 1000, 2)} km`], ['체감 온도', `${fmt(Phys.windChill(p.temp, p.wind), 1)} °C`],
+      const total = p.rate * p.hours, now = Phys.snowDepth(p, p.time);
+      return [['누적 적설 (최대)', `${fmt(total, 1)} cm`], ['경과 시간의 적설', `${fmt(now, 1)} cm (${p.time < p.hours ? '내리는 중' : now > 0 ? '녹는 중' : '다 녹음'})`], ['다 녹는 시각', `${fmt(p.hours + p.melt)} 시간 뒤`], ['시정 (눈)', `${fmt(Phys.snowVis(p.rate) / (1 + p.wind / 15) / 1000, 2)} km`], ['체감 온도', `${fmt(Phys.windChill(p.temp, p.wind), 1)} °C`],
         ['대설 특보 (24시간)', total >= 20 ? '경보 수준' : total >= 5 ? '주의보 수준' : '해당 없음']];
     },
     env: p => ({ snow: p.rate, wind: p.wind, dir: 320, gloom: clamp(.2 + p.rate / 25, 0, .7), vis: Phys.snowVis(p.rate) / (1 + p.wind / 15), tint: 0xdde4ec, tintAmt: .8, sea: clamp(p.wind / 25, .2, .8) }),
