@@ -5,6 +5,7 @@
    API: window.koreaDisaster.set(type, params, { longitude, latitude }, data) · .stop() · .get() · .sky(id) · .sea(id) */
 import { registerDisasterEffects } from './fx.js';
 import { attachCardList } from './cards.js';
+import { makeDraggable } from './draggable.js';
 
 const CSS = `
 #dx-panel.closed,#dx-open.closed{display:none!important}
@@ -90,6 +91,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters }) {
   const opener = document.createElement('button'); opener.id = 'dx-open'; opener.type = 'button'; opener.textContent = '재난 · 기후변화 ›'; opener.classList.add('closed');
   document.body.append(root, opener);
   const $ = id => root.querySelector('#' + id);
+  makeDraggable(root, root.querySelector('header'), 'dx-panel-pos'); // 제목 줄을 끌어 옮김
   // 접기 / 펴기 (hidden 속성은 display 규칙에 덮여서 클래스로)
   $('dx-close').onclick = () => { root.classList.add('closed'); opener.classList.remove('closed'); };
   opener.onclick = () => { root.classList.remove('closed'); opener.classList.add('closed'); };

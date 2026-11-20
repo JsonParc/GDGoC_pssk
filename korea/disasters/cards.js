@@ -7,6 +7,8 @@
    카드 → "시뮬레이션 실행": 카메라를 발생 지점으로 옮기고 koreaDisaster.set(map_effect.type, params, position)
    저장한 카드는 이 브라우저(localStorage)에 보관 */
 
+import { makeDraggable } from './draggable.js';
+
 const TYPE_LABEL = {
   flood: ['호우 · 홍수', '🌧', '#2d6cdf'], typhoon: ['태풍', '🌀', '#5b4bd6'], heavysnow: ['대설', '❄', '#5aa0c8'], coldwave: ['한파', '🥶', '#3f8fb5'],
   heatwave: ['폭염', '☀', '#e0702a'], strongwind: ['강풍', '💨', '#6b8a99'], wave: ['풍랑', '🌊', '#2f7f9c'], yellowdust: ['황사', '🌫', '#b08a4a'],
@@ -86,6 +88,7 @@ export function attachCardList({ viewer, Cesium, panel }) {
   const opener = document.createElement('button'); opener.id = 'ev-open'; opener.type = 'button'; opener.textContent = '‹ 재난 사건'; opener.classList.add('closed');
   document.body.append(root, opener);
   const $ = id => root.querySelector('#' + id);
+  makeDraggable(root, root.querySelector('header'), 'ev-drawer-pos'); // 제목 줄을 끌어 옮김
   $('ev-close').onclick = () => { root.classList.add('closed'); opener.classList.remove('closed'); };
   opener.onclick = () => { root.classList.remove('closed'); opener.classList.add('closed'); };
 
