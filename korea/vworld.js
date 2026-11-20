@@ -10,7 +10,8 @@ const credentials = document.querySelector('#credentials');
 const forget = document.querySelector('#forget');
 const storageKey = 'korea-vworld-key';
 // 브이월드가 점검 · 장애로 안 열리면 예비 지도(같은 재난 패널 · 효과, 공개 지형 · 영상 · OSM 건물)로 자동 전환
-const toBackup = reason => { if (new URLSearchParams(location.search).has('nofallback')) return; console.warn('브이월드 실패 → 예비 지도:', reason); location.replace('./backup.html?fallback=1'); };
+let ready = false;
+const toBackup = reason => { if (ready) return; const q = new URLSearchParams(location.search); if (q.has('nofallback') || q.has('settings')) return; console.warn('브이월드 실패 → 예비 지도:', reason); location.replace('./backup.html?fallback=1'); };
 // 브라우저에 저장한 키가 없으면 config.js의 배포용 키
 const vworldKey = () => localStorage.getItem(storageKey) || window.KOREA_VWORLD_KEY || '';
 const regions = {
@@ -57,8 +58,7 @@ function start() {
     improveTileCoverage(viewer.scene, Cesium);
     region.disabled = false;
     map.getElementById?.('poi_base')?.hide?.();
-    const showSettings = new URLSearchParams(location.search).has('settings');
-    document.querySelector('aside').hidden = !showSettings;
+    ready = true;
     status.hidden = true;
     region.addEventListener('change', () => {
       const [lng, lat, height, tilt] = regions[region.value];
@@ -77,7 +77,13 @@ function start() {
   map.start();
 }
 
-if (vworldKey()) {
+const settingsMode = new URLSearchParams(location.search).has('settings');
+// 브이월드 SDK 파일(map.vworld.kr)에서 지도가 준비되기 전에 오류가 나면 예비 지도로
+window.addEventListener('error', e => { if (!ready && !settingsMode && /vworld\.kr/.test(e.filename || '')) toBackup('SDK 오류: ' + e.message); });
+if (!vworldKey()) {
+  // 키가 없으면 입력창 대신 바로 예비 지도 (키 설정은 vworld.html?settings=1)
+  if (settingsMode) status.textContent = '브이월드 API 키를 설정하세요.'; else toBackup('키 없음');
+} else {
   forget.hidden = false;
   status.textContent = '브이월드 지도를 불러오는 중…';
   try {

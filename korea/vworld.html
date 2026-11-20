@@ -37,6 +37,7 @@
     #disaster-controls button { background: transparent; padding: 4px 6px; }
     #disaster-controls #elevation { margin: 0; }
     #disaster-controls button:disabled { opacity: 0.45; }
+      #status:not([hidden]) { position: absolute; z-index: 4; top: 12px; left: 50%; transform: translateX(-50%); margin: 0; }
   </style>
 </head>
 <body>
@@ -63,7 +64,9 @@
     <p role="status"></p>
     <ul id="search-results" aria-label="검색 결과"></ul>
   </section>
-  <aside>
+  <p id="status" role="status">지도를 불러오는 중…</p>
+  <!-- 키 설정 · 지역 이동: 평소엔 숨김, vworld.html?settings=1 일 때만 -->
+  <aside hidden>
     <div class="controls"><select id="region" aria-label="지역 이동" disabled>
       <option value="seoul">서울 · 광화문</option>
       <option value="korea">대한민국 전체</option>
@@ -71,8 +74,7 @@
       <option value="busan">부산 · 해운대</option>
       <option value="jeju">제주 · 한라산</option>
     </select><a href="../index.html?map=open">기존 지도</a></div>
-    <p id="status" role="status">브이월드 API 키를 설정하세요.</p>
-    <details id="settings" open><summary>API 키 설정</summary>
+    <details id="settings"><summary>API 키 설정</summary>
     <form id="credentials">
       <label for="api-key">브이월드 WebGL API 키</label>
       <input id="api-key" type="password" autocomplete="off" required>
@@ -90,6 +92,7 @@
   </section>
   <script src="../js/disaster.js"></script>
   <script src="../js/atmosphere.js"></script>
+  <script>if (new URLSearchParams(location.search).has('settings')) document.querySelector('aside').hidden = false;</script>
   <script type="module" src="./vworld.js"></script>
 </body>
 </html>
