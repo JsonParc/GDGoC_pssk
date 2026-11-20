@@ -12,6 +12,8 @@ export function enableDisasterControls(viewer, Cesium) {
 
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   handler.setInputAction(async ({ position }) => {
+    const disasterPanel = window.koreaDisaster;
+    if (!disasterPanel?.get().drawing && disasterPanel?.cards?.pickMapPin(position)) return;
     const ray = viewer.camera.getPickRay(position);
     const point = ray && viewer.scene.globe.pick(ray, viewer.scene);
     if (!point) return;

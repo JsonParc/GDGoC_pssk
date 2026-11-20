@@ -1,0 +1,77 @@
+#map-start[hidden], #map-assistant[hidden], #map-start [hidden] { display: none; }
+.map-onboarding :is(#location-search,#dx-panel,#dx-open,#ev-drawer,#ev-open,#disaster-controls,#naviTopPannel3d,#naviBottomPannel3d) { visibility: hidden; }
+#map-start {
+  position: fixed; inset: 0; z-index: 6; display: grid; place-items: center; overflow: auto;
+  padding: 20px; color: #f0f6f2; background: #101a19a6;
+}
+#map-start-form {
+  position: relative; box-sizing: border-box; width: min(620px,100%); margin: auto;
+  padding: clamp(22px,5vw,36px); border: 1px solid #526761; border-radius: 21px;
+  background: #202c2c; box-shadow: 0 20px 64px #0a141680;
+}
+.earthpulse-brand { display: flex; width: fit-content; align-items: center; gap: 8px; margin-bottom: 13px;
+  color: #c5e8d8; font-size: 16px; font-weight: 760; letter-spacing: -.035em; }
+.earthpulse-mark { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 7px; background: #2e5045; }
+.earthpulse-mark::after { content: ""; width: 17px; height: 12px; background: #b3e4cf;
+  clip-path: polygon(0 48%, 23% 48%, 35% 11%, 43% 11%, 55% 74%, 66% 41%, 100% 41%, 100% 56%, 72% 56%, 59% 96%, 51% 96%, 38% 36%, 31% 63%, 0 63%); }
+#map-start h1 { margin: 0 85px 0 0; font-size: clamp(18px,4vw,30px); line-height: 1.22; letter-spacing: -.055em; white-space: nowrap; }
+#map-start .start-description { margin: 11px 72px 23px 0; color: #bdcec6; font-size: 14px; line-height: 1.55; }
+#map-start :is(h1,.start-description) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#map-start .start-search { position: relative; }
+#map-start input[type=search] {
+  display: block; height: 48px; margin: 0; padding: 0 14px 0 39px; border: 1px solid #5e7a71;
+  border-radius: 10px; background: #162221; color: #f3fbf7; box-shadow: none;
+}
+#map-start input[type=search]::placeholder { color: #a7bbb2; }
+.start-search-icon { pointer-events: none; position: absolute; top: 17px; left: 15px; width: 11px; height: 11px; border: 1.5px solid #a8d8c6; border-radius: 50%; }
+.start-search-icon::after { content: ""; position: absolute; top: 11px; left: 9px; width: 6px; height: 1.5px; rotate: 45deg; background: #a8d8c6; }
+#map-start .start-presets { display: flex; gap: clamp(10px,2vw,16px); margin: 10px 0 19px; padding: 2px; overflow-x: auto; scrollbar-width: none; }
+#map-start .start-presets button { flex: none; min-height: 32px; padding: 5px clamp(10px,2.4vw,17px); border: 1px solid #536962; border-radius: 999px; background: transparent; color: #cbddd3; cursor: pointer; }
+#map-start .start-presets button:hover, #map-start .start-presets button[aria-pressed=true] { background: #354e46; border-color: #8dc3ad; color: #f5fdf9; }
+#start-results {
+  position: absolute; z-index: 3; top: calc(100% + 6px); inset-inline: 0; max-height: min(250px,35dvh); overflow: auto;
+  list-style: none; margin: 0; padding: 5px; border: 1px solid #536e63; border-radius: 11px; background: #263633;
+  box-shadow: 0 10px 24px #121e1b80;
+}
+#start-results button { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; color: #eff9f4; text-align: left; cursor: pointer; }
+#start-results button:is(:hover,:focus-visible) { background: #38534a; }
+#start-results small { display: block; margin-top: 3px; color: #becfc7; }
+#map-start :is(input,button):focus-visible { outline: 2px solid #a5e2cc; outline-offset: 3px; }
+#map-start button.start-submit { display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%;
+  min-height: 47px; border: 0; border-radius: 10px; background: #b5dac7; color: #152e26; font-weight: 760; cursor: pointer; }
+#map-start button.start-submit:not(:disabled):hover { background: #cdebdc; box-shadow: none; }
+#map-start button.start-submit:disabled { opacity: .75; cursor: progress; }
+#map-start .start-status { margin: 10px 0 0; color: #e2c8a8; font-size: 13px; }
+#map-start .start-status:empty { display: none; }
+.map-cloud { width: 89px; height: 66px; pointer-events: none; }
+#map-start .map-cloud { position: absolute; top: 22px; right: 24px; }
+.map-cloud svg { display: block; width: 100%; height: 100%; }
+.map-cloud .cloud-eyes { transform-origin: center; transform-box: fill-box; }
+#map-assistant { position: fixed; z-index: 5; right: calc(var(--map-navigation-gap,64px) + 12px);
+  top: var(--map-panel-top,48px); pointer-events: none; }
+#map-start.leaving ~ #map-assistant { z-index: 7; }
+:is(#map-assistant,#ev-cloud-slot) .map-cloud { width: 43px; height: 32px; }
+@media (max-width: 570px) {
+  #map-start-form { padding-top: 26px; }
+  .earthpulse-brand { margin-bottom: 29px; }
+  #map-start .map-cloud { top: 19px; right: 18px; width: 66px; height: 52px; }
+  #map-start h1 { margin-right: 0; font-size: clamp(14px,4.55vw,24px); }
+  #map-start .start-description { margin-right: 0; font-size: clamp(11px,2.5vw,14px); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  #map-start-form { animation: onboarding-enter 340ms cubic-bezier(.2,.75,.25,1) both; }
+  .earthpulse-mark::after { animation: earthpulse-signal 620ms 160ms ease-out both; }
+  #map-start.leaving { animation: onboarding-exit 230ms ease both; }
+  #start-results:not([hidden]) { animation: onboarding-enter 170ms ease-out both; }
+  #map-start button { transition: background-color 150ms ease,border-color 150ms ease,scale 150ms ease; }
+  #map-start button:not(:disabled):active { scale: .98; }
+  #map-start .start-arrow { transition: translate 160ms ease; }
+  #map-start .start-submit:not(:disabled):hover .start-arrow { translate: 4px 0; }
+  #map-start .map-cloud svg { animation: cloud-float 3.6s ease-in-out infinite; }
+  .map-cloud .cloud-eyes { animation: cloud-blink 5.6s ease-in-out infinite; }
+  @keyframes onboarding-enter { from { opacity: 0; translate: 0 11px; } to { opacity: 1; translate: 0 0; } }
+  @keyframes onboarding-exit { to { opacity: 0; } }
+  @keyframes earthpulse-signal { from { opacity: 0; scale: .5 1; } 55% { opacity: 1; scale: 1.15 1; } to { opacity: 1; scale: 1 1; } }
+  @keyframes cloud-float { 50% { translate: 0 -5px; } }
+  @keyframes cloud-blink { 0%, 42%, 48%, 100% { scale: 1 1; } 45% { scale: 1 .1; } }
+}

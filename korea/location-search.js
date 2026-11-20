@@ -42,6 +42,31 @@ function searchVWorld(key, query, type) {
   });
 }
 
+function mapPlace(item, query) {
+  const longitude = Number.parseFloat(item.point?.x), latitude = Number.parseFloat(item.point?.y);
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude) || Math.abs(longitude) > 180 || Math.abs(latitude) > 90) return null;
+  const address = item.address?.road || item.address?.parcel;
+  return { longitude, latitude, address, title: item.title || item.address?.bldnm || address || query };
+}
+
+export async function findMapPlaces(key, query) {
+  if (!key) throw new Error('주소 검색을 사용할 수 없어요. 빠른 지역을 선택해 주세요.');
+  const types = /\d/.test(query) ? ['road', 'parcel', 'place'] : ['place', 'road', 'parcel'];
+  const results = await Promise.allSettled(types.map(type => searchVWorld(key, query, type)));
+  if (results.every(result => result.status === 'rejected')) throw results[0].reason;
+  const places = new Map();
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue;
+    for (const item of result.value) {
+      const place = mapPlace(item, query);
+      if (!place) continue;
+      const id = [place.title, place.longitude.toFixed(5), place.latitude.toFixed(5)].join('|');
+      if (!places.has(id)) places.set(id, place);
+    }
+  }
+  return [...places.values()].slice(0, 6);
+}
+
 export function enableLocationSearch({ key, viewer, Cesium }) {
   const section = document.querySelector('#location-search');
   const form = section.querySelector('form');
@@ -88,12 +113,9 @@ export function enableLocationSearch({ key, viewer, Cesium }) {
       const items = await searchVWorld(key, query, form.elements.type.value);
       if (current !== selection) return;
       for (const item of items) {
-        const longitude = Number.parseFloat(item.point?.x);
-        const latitude = Number.parseFloat(item.point?.y);
-        if (!Number.isFinite(longitude) || !Number.isFinite(latitude) ||
-            Math.abs(longitude) > 180 || Math.abs(latitude) > 90) continue;
-        const address = item.address?.road || item.address?.parcel;
-        const title = item.title || item.address?.bldnm || address || query;
+        const place = mapPlace(item, query);
+        if (!place) continue;
+        const { longitude, latitude, title, address } = place;
         const row = document.createElement('li');
         const button = document.createElement('button');
         button.type = 'button';

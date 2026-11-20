@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>재난 시각화 플랫폼 (예비 지도)</title>
+  <title>EarthPulse | 예비 지도</title>
   <!-- 예비 지도: 브이월드가 점검 · 장애로 안 열리면 vworld.html이 자동으로 이리 넘어옴 (키 없이도 열림).
        브이월드 SDK와 같은 CesiumJS 1.99 + AWS 공개 DEM + Sentinel-2 영상 + OpenStreetMap 3D 건물 · 물. 재난 패널 · 효과 코드는 vworld.html과 같음 -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.99.0/Build/Cesium/Widgets/widgets.css">
@@ -24,7 +24,7 @@
 </head>
 <body>
   <main id="vmap" aria-label="재난 시각화 플랫폼 예비 지도"></main>
-  <p id="note">예비 지도입니다 (공개 지형 · 위성 영상 · OpenStreetMap 건물). <span id="why"></span><a href="./vworld.html?retry=1">브이월드 3D 지도 다시 열기</a></p>
+  <p id="note">예비 지도 <a href="./vworld.html?retry=1">홈으로</a></p>
   <section id="disaster-controls" aria-label="좌표와 3D 마커" hidden>
     <output id="elevation" aria-live="polite">지점 선택</output>
     <div class="controls"><button type="button" id="place-marker" disabled>3D 마커</button></div>

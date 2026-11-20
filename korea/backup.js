@@ -61,8 +61,8 @@ const [lng, lat, h, pitch] = (params.get('view') || '126.978,37.552,1050,-30').s
 viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(lng, lat, h), orientation: { heading: Cesium.Math.toRadians(+(params.get('heading') || 0)), pitch: Cesium.Math.toRadians(pitch), roll: 0 } });
 
 const disasters = enableDisasterControls(viewer, Cesium);
-const disasterPanel = attachDisasterPanel({ viewer, Cesium, disasters, eventRegion: params.get('events') });
+const eventRegion = params.get('events') === 'nearby' ? { longitude: lng, latitude: lat } : params.get('events');
+const disasterPanel = attachDisasterPanel({ viewer, Cesium, disasters, eventRegion });
 createOsmBuildings(viewer, Cesium);
-if (params.get('fallback')) document.querySelector('#why').textContent = '브이월드 지도를 불러오지 못해(점검 · 장애) 예비 지도로 열었습니다. ';
 window.koreaVWorld = { viewer, getElevation, disasters, disasterPanel };
 window.dispatchEvent(new Event('korea-vworld-ready'));

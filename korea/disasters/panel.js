@@ -152,12 +152,17 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
   makeDraggable(root, root.querySelector('header'), 'dx-panel-pos'); // 제목 줄을 끌어 옮김
   makeDraggable(opener, opener, 'dx-opener-pos');
   // 접기 / 펴기 (hidden 속성은 display 규칙에 덮여서 클래스로)
+  function setOpen(open) {
+    root.classList.toggle('closed', !open);
+    opener.classList.toggle('closed', open);
+    if (!open) stopTapHint();
+  }
   $('dx-close').onclick = () => {
-    root.classList.add('closed'); opener.classList.remove('closed'); stopTapHint();
+    setOpen(false);
     opener.focus({ preventScroll: true });
   };
   opener.onclick = () => {
-    root.classList.remove('closed'); opener.classList.add('closed');
+    setOpen(true);
     $('dx-close').focus({ preventScroll: true });
   };
   root.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
@@ -168,6 +173,8 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
   });
 
   let type = 'typhoon', params = {}, site = null, running = null, data = null;
+  let activeCard = null, runRequest = null;
+  let automaticSky = null, previousSky = null;
   // 재난 → 하늘 템플릿 (템플릿 뷰어의 하늘 사진). 지진 · 해일은 하늘을 바꾸지 않음
   const DISASTER_SKY = { typhoon: 'thunder-storm', flood: 'slate-overcast', snow: 'blizzard-gray', heatwave: 'golden-dusk', wildfire: 'amber-dawn', sealevel: 'cumulus-blue', tsunami: 'sea-fog' };
   const defaults = t => Object.fromEntries(TYPES[t].params.map(q => [q.key, q.value]));
@@ -189,17 +196,43 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
   }
   function stopTapHint() { tapHint.hidden = true; }
   const siteText = (at, extra = '') => `발생 지점: ${at.latitude.toFixed(4)}°, ${at.longitude.toFixed(4)}°${extra}`;
-  async function start() {
+  async function start(card = null) {
     const at = site || centerSite();
     if (!at) { $('dx-site').textContent = '지도를 클릭해 발생 지점을 고르세요.'; return; }
     stopTapHint();
-    for (const t of Object.keys(TYPES)) if (t !== type && disasters.isActive(t)) disasters.stop(t);
-    running = type; render();
-    if ($('dx-skyauto').checked && DISASTER_SKY[type] && api.sky) api.sky(DISASTER_SKY[type]);
-    await disasters.start({ type, longitude: at.longitude, latitude: at.latitude, intensity: 1, params: { ...params } });
+    for (const t of Object.keys(TYPES)) if (t !== type) disasters.stop(t);
+    const request = {};
+    runRequest = request;
+    running = type;
+    activeCard = card ? { ...card, pending: true } : null;
+    render(); api.cards?.syncSimulation();
+    if ($('dx-skyauto').checked && DISASTER_SKY[type]) {
+      if (!automaticSky || S.sky !== automaticSky) previousSky = S.sky;
+      automaticSky = DISASTER_SKY[type];
+      api.sky(automaticSky);
+    }
+    const runType = type;
+    try {
+      await disasters.start({ type: runType, longitude: at.longitude, latitude: at.latitude, intensity: 1, params: { ...params } });
+    } catch (error) {
+      if (runRequest !== request) return false;
+      stop();
+      throw error;
+    }
+    if (runRequest !== request || !disasters.isActive(runType)) return false;
+    if (activeCard) activeCard.pending = false;
+    api.cards?.syncSimulation();
     $('dx-site').textContent = siteText(at, site ? '' : ' (화면 가운데)');
+    return true;
   }
-  function stop() { for (const t of Object.keys(TYPES)) if (disasters.isActive(t)) disasters.stop(t); running = null; render(); }
+  function stop() {
+    runRequest = null;
+    for (const t of Object.keys(TYPES)) disasters.stop(t);
+    if (automaticSky && S.sky === automaticSky) api.sky(previousSky);
+    automaticSky = null;
+    running = null; activeCard = null;
+    render(); api.cards?.syncSimulation();
+  }
 
   /* 영역 그리기 (산불 · 홍수): 지도 클릭마다 꼭짓점, 완료하면 그 다각형이 피해 영역 */
   const DRAWABLE = ['wildfire', 'flood'];
@@ -253,7 +286,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
     site = { longitude, latitude };
     stopTapHint();
     $('dx-site').textContent = siteText(site, running ? '' : ' (적용을 누르세요)');
-    if (running) start(); // 켜져 있으면 클릭한 곳으로 옮김 (산불 발화점 등)
+    if (running) start(activeCard); // 켜져 있으면 클릭한 곳으로 옮김 (산불 발화점 등)
   }
 
   let built = '';
@@ -293,7 +326,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
     const areaIn = root.querySelector('#dx-p-area');
     if (areaIn) { const locked = !!params.polygon; areaIn.disabled = locked; root.querySelector('#dx-r-area').disabled = locked; areaIn.title = locked ? '그린 영역의 면적' : ''; }
   }
-  $('dx-apply').onclick = start; $('dx-stop').onclick = stop;
+  $('dx-apply').onclick = () => start(); $('dx-stop').onclick = stop;
   $('dx-base').onchange = e => { params.waterBase = e.target.value; if (running === type) disasters.setParams(type, { ...params }); render(); };
   $('dx-json-apply').onclick = () => {
     try { const j = JSON.parse($('dx-json').value); if (!TYPES[j.type] || j.type === 'none') throw new Error('type 오류'); api.set(j.type, j.params, j.site, j.data); }
@@ -338,14 +371,14 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
       type = t; params = { ...defaults(t), ...p }; if (at) site = at; if (extra !== undefined) data = extra;
       if (params.polygon && t === 'wildfire') params.area = Math.round(polygonHa(params.polygon)); // 그린 영역 면적
       showPreview(params.polygon || [], true);
-      render(true); return start();
+      render(true); return start(extra?.cardId != null ? { id: String(extra.cardId), title: extra.title } : null);
     },
-    stop, get: () => ({ type: running, params: { ...params }, site, data }), effects: S,
+    stop, setOpen, get: () => ({ type: running, params: { ...params }, site, data, activeCard, drawing }), effects: S,
     // 백엔드 구름: [{ id, longitude, latitude, base | baseAboveGround, width, height, depth?, speed, direction, precip?, rate?, darkness? }]
     clouds: { load: (list, origin) => S.C && S.C.load(list, origin), update: list => S.C && S.C.update(list), clear: () => S.C && S.C.clear() },
     sky: id => S.setSky(id || null), sea: () => {},
   };
   window.koreaDisaster = api;
-  try { api.cards = attachCardList({ viewer, Cesium, initialRegion: eventRegion }); } catch (e) { console.warn('재난 사건 목록', e); } // 오른쪽 재난 사건 목록 (백엔드 API)
+  try { api.cards = attachCardList({ viewer, Cesium, panel: api, initialRegion: eventRegion }); } catch (e) { console.warn('재난 사건 목록', e); } // 오른쪽 재난 사건 목록 (백엔드 API)
   return api;
 }
