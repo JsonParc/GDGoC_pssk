@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>브이월드 대한민국 3D 지도</title>
+  <style>
+    body { margin: 0; font: 14px system-ui, sans-serif; color: #183029; }
+    #vmap { position: fixed; inset: 0; background: #dce9e3; }
+    aside { position: absolute; top: 12px; left: 12px; z-index: 1; width: min(280px, calc(100vw - 44px)); }
+    .controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    select, button, input, summary, .controls a, #status:not([hidden]), #elevation:not(:empty) {
+      border: 1px solid #647a70; border-radius: 6px; padding: 6px 8px;
+      background: #142720e8; color: #fff; font: inherit;
+    }
+    #status, #elevation:not(:empty) { display: block; width: fit-content; margin: 8px 0; }
+    details { margin-top: 8px; }
+    summary { width: fit-content; cursor: pointer; }
+    form { margin: 8px 0; }
+    input { box-sizing: border-box; width: 100%; margin: 4px 0; }
+    details label, details a { color: #fff; background: #142720e8; padding: 2px 4px; }
+    #location-search { position: absolute; z-index: 2; top: 12px; left: 50%;
+      transform: translateX(-50%); width: min(420px, calc(100vw - 90px)); }
+    #location-search form { display: flex; gap: 4px; margin: 0; }
+    #location-search input { flex: 1; min-width: 0; margin: 0; }
+    #location-search input::placeholder { color: #c3d1cb; }
+    #location-search p { color: white; background: #142720e8; border-radius: 6px; padding: 8px; margin: 6px 0; }
+    #location-search p:empty { display: none; }
+    #search-results { list-style: none; padding: 0; margin: 4px 0 0; max-height: 40vh; overflow: auto; }
+    #search-results button { width: 100%; text-align: left; cursor: pointer; }
+    #search-results button:hover, #search-results button:focus-visible { background: #2e5547; }
+    #search-results small { display: block; color: #c3d1cb; }
+    #disaster-controls { position: absolute; z-index: 2; bottom: 40px; left: 12px;
+      max-width: calc(100vw - 44px); padding: 6px 8px; border-radius: 7px;
+      background: #142720e8; color: #fff; }
+    #disaster-controls:not([hidden]) { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #disaster-controls button { background: transparent; padding: 4px 6px; }
+    #disaster-controls #elevation { margin: 0; }
+    #disaster-controls button:disabled { opacity: 0.45; }
+  </style>
+</head>
+<body>
+  <main id="vmap" aria-label="브이월드 3D 지도"></main>
+  <script>
+    const key = localStorage.getItem('korea-vworld-key');
+    if (key) {
+      const sdk = new URL('https://map.vworld.kr/js/webglMapInit.js.do');
+      sdk.search = new URLSearchParams({ version: '3.0', apiKey: key });
+      document.write('<script src="' + sdk.href + '"><\/script>');
+    }
+  </script>
+  <section id="location-search" aria-label="위치 검색" hidden>
+    <form role="search">
+      <select name="type" aria-label="검색 유형">
+        <option value="place">장소</option>
+        <option value="road">도로명 주소</option>
+        <option value="parcel">지번 주소</option>
+      </select>
+      <input name="query" type="search" aria-label="장소 또는 주소" placeholder="장소 또는 주소" required maxlength="100">
+      <button type="submit">검색</button>
+    </form>
+    <p role="status"></p>
+    <ul id="search-results" aria-label="검색 결과"></ul>
+  </section>
+  <aside>
+    <div class="controls"><select id="region" aria-label="지역 이동" disabled>
+      <option value="seoul">서울 · 광화문</option>
+      <option value="korea">대한민국 전체</option>
+      <option value="bukhansan">서울 · 북한산</option>
+      <option value="busan">부산 · 해운대</option>
+      <option value="jeju">제주 · 한라산</option>
+    </select><a href="../index.html?map=open">기존 지도</a></div>
+    <p id="status" role="status">브이월드 API 키를 설정하세요.</p>
+    <details id="settings" open><summary>API 키 설정</summary>
+    <form id="credentials">
+      <label for="api-key">브이월드 WebGL API 키</label>
+      <input id="api-key" type="password" autocomplete="off" required>
+      <button type="submit">이 브라우저에 저장</button>
+      <button type="button" id="forget" hidden>저장된 키 삭제</button>
+    </form>
+    <a href="https://www.vworld.kr/" target="_blank" rel="noopener">브이월드 키 발급</a>
+    </details>
+  </aside>
+  <section id="disaster-controls" aria-label="좌표와 3D 마커" hidden>
+    <output id="elevation" aria-live="polite">지점 선택</output>
+    <div class="controls">
+      <button type="button" id="place-marker" disabled>3D 마커</button>
+    </div>
+  </section>
+  <script type="module" src="./vworld.js"></script>
+</body>
+</html>
