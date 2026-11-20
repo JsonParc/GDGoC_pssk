@@ -1,4 +1,6 @@
-﻿let requestId = 0;
+﻿import { makeDraggable } from './disasters/draggable.js';
+
+let requestId = 0;
 
 function searchVWorld(key, query, type) {
   return new Promise((resolve, reject) => {
@@ -49,6 +51,7 @@ export function enableLocationSearch({ key, viewer, Cesium }) {
   let selection = 0;
   let marker;
   section.hidden = false;
+  makeDraggable(section, section.querySelector('.search-grip'), 'vworld-search-pos');
 
   function selectPlace(longitude, latitude, title) {
     if (marker) viewer.entities.remove(marker);

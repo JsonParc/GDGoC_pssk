@@ -4,9 +4,38 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>재난 시각화 플랫폼</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Asta+Sans:wght@400..800&display=swap">
   <style>
-    body { margin: 0; font: 14px system-ui, sans-serif; color: #183029; }
+    :root { --map-panel-top: 48px; --map-navigation-gap: 64px; }
+    html, body, #vmap, #vmap *, #search-results { scrollbar-width: none; }
+    body { margin: 0; font: 14px "Asta Sans", "Malgun Gothic", system-ui, sans-serif; color: #183029; }
     #vmap { position: fixed; inset: 0; background: #dce9e3; }
+    #naviTopPannel3d.zoom-top-right { right: 4px; width: 56px; padding-inline: 8px; box-sizing: border-box; }
+    #map-start[hidden] { display: none; }
+    #map-start { position: fixed; inset: 0; z-index: 6; display: grid; place-items: center; padding: 18px;
+      color: #f1f5f0; background: radial-gradient(ellipse at 50% 36%, #35544b, #192925 67%); }
+    #map-start form { box-sizing: border-box; width: min(478px, 100%); margin: 0; padding: clamp(20px,5vw,32px);
+      border: 1px solid #536d62; border-radius: 20px; background: #202e2b; box-shadow: 0 16px 48px #111d1a66; }
+    #map-start h1 { margin: 0 0 24px; font-size: clamp(22px,4vw,29px); line-height: 1.25; letter-spacing: -.04em; word-break: keep-all; }
+    #map-start fieldset { min-inline-size: 0; border: 0; padding: 0; margin: 0 0 22px; }
+    #map-start .start-places { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
+    #map-start label { display: grid; place-items: center; min-height: 46px; padding: 0 8px;
+      color: #d4e4dc; border: 1px solid #50655d; border-radius: 10px; background: #263834; cursor: pointer; }
+    #map-start input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    #map-start label:hover { border-color: #92d5bb; }
+    #map-start label:has(input:checked) { color: #172e26; background: #a5d7b9; border-color: #a5d7b9; font-weight: 700; }
+    #map-start label:has(input:focus-visible) { outline: 2px solid #c1f4e0; outline-offset: 3px; }
+    #map-start button { width: 100%; min-height: 46px; border: 0; border-radius: 10px;
+      background: linear-gradient(105deg, #b4d29a, #83c8b6); color: #182f27; font-weight: 750; cursor: pointer; }
+    #map-start button:disabled { opacity: .75; cursor: progress; }
+    #map-start .start-progress { width: 44px; height: 2px; margin: 14px auto 0; border-radius: 2px; background: #79ab98; }
+    @media (prefers-reduced-motion: no-preference) {
+      #map-start label { transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease; }
+      #map-start .start-progress { animation: start-progress 1.15s ease-in-out infinite alternate; }
+      @keyframes start-progress { from { opacity: .35; scale: .52 1; } to { opacity: 1; scale: 1 1; } }
+    }
     aside { position: absolute; top: 12px; left: 12px; z-index: 1; width: min(280px, calc(100vw - 44px)); }
     .controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     select, button, input, summary, .controls a, #status:not([hidden]), #elevation:not(:empty) {
@@ -19,17 +48,36 @@
     form { margin: 8px 0; }
     input { box-sizing: border-box; width: 100%; margin: 4px 0; }
     details label, details a { color: #fff; background: #142720e8; padding: 2px 4px; }
-    #location-search { position: absolute; z-index: 2; top: 12px; left: 50%;
-      transform: translateX(-50%); width: min(420px, calc(100vw - 90px)); }
-    #location-search form { display: flex; gap: 4px; margin: 0; }
-    #location-search input { flex: 1; min-width: 0; margin: 0; }
-    #location-search input::placeholder { color: #c3d1cb; }
-    #location-search p { color: white; background: #142720e8; border-radius: 6px; padding: 8px; margin: 6px 0; }
+    #location-search { --search-width: min(462px, calc(100vw - 850px)); position: absolute; z-index: 4;
+      top: var(--map-panel-top); left: calc(50% - 57px - var(--search-width) / 2); width: var(--search-width); color-scheme: dark; }
+    @media (max-width: 1080px) {
+      :root { --map-side-panel-width: 264px; }
+      #location-search { --search-width: calc(100vw - 680px); left: 290px; }
+    }
+    @media (max-width: 860px) {
+      :root { --map-side-panel-width: 337px; --map-panel-top: 54px; }
+      #location-search { --search-width: min(462px, calc(100vw - 32px)); top: 4px;
+        left: calc(50% - var(--search-width) / 2); }
+    }
+    #location-search form { display: flex; align-items: center; gap: 7px; margin: 0; padding: 5px 6px 5px 11px;
+      min-height: 32px; background: #202c2c; border: 1px solid #425552; border-radius: 999px; box-shadow: 0 6px 18px #111e1c66; }
+    #location-search .search-grip { flex: 0 0 16px; height: 28px; cursor: grab; box-sizing: border-box; padding: 8px 4px;
+      background: radial-gradient(circle, #a1b6ad 1px, transparent 1.5px) center / 4px 4px; background-clip: content-box; }
+    #location-search select { max-width: 36%; min-width: 78px; font-size: 13px; }
+    #location-search input { flex: 1; min-width: 0; margin: 0; background: transparent; border: 0; color: #f1f5f0; font-size: 14px; }
+    #location-search input::placeholder { color: #a1b6ad; }
+    #location-search button[type=submit] { position: relative; display: grid; place-items: center; flex: 0 0 35px; height: 35px;
+      padding: 0; border: 0; border-radius: 50%; background: #344b45; color: #92d5bb; cursor: pointer; }
+    #location-search .search-icon { position: relative; width: 10px; height: 10px; border: 1.5px solid currentColor; border-radius: 50%; }
+    #location-search .search-icon::after { content: ""; position: absolute; width: 5px; height: 1.5px; background: currentColor;
+      bottom: -2px; right: -4px; transform: rotate(45deg); }
+    #location-search :is(input, select, button):focus-visible { outline: 2px solid #a5e2cc; outline-offset: 1px; }
+    #location-search p { color: #f1f5f0; background: #202c2c; border: 1px solid #425552; border-radius: 10px; padding: 8px; margin: 6px 0; }
     #location-search p:empty { display: none; }
     #search-results { list-style: none; padding: 0; margin: 4px 0 0; max-height: 40vh; overflow: auto; }
-    #search-results button { width: 100%; text-align: left; cursor: pointer; }
-    #search-results button:hover, #search-results button:focus-visible { background: #2e5547; }
-    #search-results small { display: block; color: #c3d1cb; }
+    #search-results button { width: 100%; text-align: left; cursor: pointer; background: #202c2c; border-color: #425552; border-radius: 9px; }
+    #search-results button:hover, #search-results button:focus-visible { background: #314440; }
+    #search-results small { display: block; color: #b5c5bf; }
     #disaster-controls { position: absolute; z-index: 2; bottom: 40px; left: 12px;
       max-width: calc(100vw - 44px); padding: 6px 8px; border-radius: 7px;
       background: #142720e8; color: #fff; }
@@ -38,12 +86,130 @@
     #disaster-controls #elevation { margin: 0; }
     #disaster-controls button:disabled { opacity: 0.45; }
       #status:not([hidden]) { position: absolute; z-index: 4; top: 12px; left: 50%; transform: translateX(-50%); margin: 0; }
+
+    :is(#dx-panel, #ev-drawer, #location-search) select:not([multiple]) {
+      appearance: none; color-scheme: dark; min-height: 37px; padding: 6px 26px 5px 10px;
+      border: 1px solid #50655d; border-radius: 9px; color: #f1f5f0; cursor: pointer;
+      background-color: #253633;
+      background-image: linear-gradient(45deg, transparent 50%, #b3d8c9 50%), linear-gradient(135deg, #b3d8c9 50%, transparent 50%);
+      background-position: right 14px center, right 9px center;
+      background-size: 5px 5px; background-repeat: no-repeat;
+      font-weight: 600;
+    }
+    :is(#dx-panel, #ev-drawer, #location-search) select:hover { background-color: #30463f; border-color: #74978a; }
+    :is(#dx-panel, #ev-drawer, #location-search) select option { background: #253633; color: #f1f5f0; }
+    #location-search form select:not([multiple]) { min-height: 33px; padding-left: 9px; border-radius: 999px; }
+    #ev-drawer .filters { gap: 6px; }
+    #ev-drawer .filters select { width: 0; }
+    #ev-drawer .filters button { flex: 0 0 36px; }
+    #dx-open, #ev-open { display: inline-flex; align-items: center; gap: 7px; }
+    :is(#dx-open, #ev-open) span { font: 25px/1 system-ui, sans-serif; }
+    @media (hover: hover) {
+      :is(#dx-panel, #ev-drawer, #location-search, #map-start) button:not(:disabled):hover,
+      :is(#dx-open, #ev-open):hover { filter: brightness(1.16); }
+      :is(#dx-panel, #ev-drawer) :is(.btns button:not(.primary), .tabs button, .filters button):not(:disabled):hover,
+      :is(#dx-open, #ev-open):hover { background-color: #38534a; border-color: #74978a; }
+      :is(#dx-panel, #ev-drawer) .btns .primary:not(:disabled):hover,
+      #map-start button:not(:disabled):hover { filter: brightness(1.09); box-shadow: 0 4px 14px #a5e2cc45; }
+    }
+
+    @supports (appearance: base-select) and selector(::picker(select)) {
+      :is(#dx-panel, #ev-drawer, #location-search) select:not([multiple]),
+      :is(#dx-panel, #ev-drawer, #location-search) select::picker(select) { appearance: base-select; }
+      :is(#dx-panel, #ev-drawer, #location-search) select:not([multiple]) {
+        align-items: center; gap: 7px; padding-inline-end: 10px; background-image: none;
+      }
+      :is(#dx-panel, #ev-drawer, #location-search) select::picker-icon {
+        content: ""; flex: 0 0 6px; width: 6px; height: 6px; margin: -3px 1px 0 auto;
+        border-right: 1.5px solid #b3d8c9; border-bottom: 1.5px solid #b3d8c9; rotate: 45deg;
+      }
+      :is(#dx-panel, #ev-drawer, #location-search) select:open {
+        background-color: #30463f; border-color: #92d5bb;
+      }
+      :is(#dx-panel, #ev-drawer, #location-search) select:open::picker-icon { margin-top: 3px; rotate: 225deg; }
+      :is(#dx-panel, #ev-drawer, #location-search) select::picker(select) {
+        position-area: block-end span-inline-end;
+        position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+        margin: 9px 0; min-inline-size: 168px; max-inline-size: calc(100dvw - 24px);
+        max-block-size: min(320px, 45dvh); overflow: auto; scrollbar-width: thin; scrollbar-color: #526961 transparent;
+        padding: 5px; border: 1px solid #526961; border-radius: 12px;
+        background: #202e2b; color: #f1f5f0; box-shadow: 0 10px 20px -6px #0d1818a0; font: inherit;
+      }
+      :is(#dx-panel, #ev-drawer, #location-search) select option {
+        display: flex; align-items: center; gap: 10px; min-height: 37px; padding: 7px 10px;
+        border-radius: 7px; background: transparent; color: #dce9e2; font-weight: 500; cursor: pointer;
+      }
+      :is(#dx-panel, #ev-drawer, #location-search) select option:checked {
+        background: #263a33; color: #d9ffeb; font-weight: 700;
+      }
+      :is(#dx-panel, #ev-drawer, #location-search) select option:is(:hover, :focus-visible) {
+        background: #455f55; color: #fff;
+      }
+      :is(#dx-panel, #ev-drawer, #location-search) select option::checkmark {
+        order: 1; margin-inline-start: auto; color: #a5e2cc;
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        @keyframes map-picker-in { from { opacity: .55; } to { opacity: 1; } }
+        :is(#dx-panel, #ev-drawer, #location-search) select:open::picker(select) { animation: map-picker-in 140ms ease-out; }
+      }
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      @keyframes map-panel-in { from { opacity: 0; translate: 0 -7px; } to { opacity: 1; translate: 0 0; } }
+      @keyframes map-tab-in { from { opacity: .5; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
+      @keyframes map-tab-underline { from { scale: .35 1; } to { scale: 1 1; } }
+      :is(#dx-panel, #ev-drawer):not(.closed),
+      #location-search:not([hidden]) { animation: map-panel-in 190ms ease-out; }
+      :is(#dx-tab-disaster, #dx-tab-env, #ev-detail):not([hidden]),
+      #ev-list .grid, #search-results li { animation: map-tab-in 155ms ease-out; }
+      :is(#dx-panel, #ev-drawer) .tabs button.on::after { animation: map-tab-underline 170ms ease-out; }
+      :is(#dx-panel button, #ev-drawer button, #location-search button, #map-start button, #dx-open, #ev-open) {
+        transition: scale 125ms ease, background-color 140ms ease, color 140ms ease, border-color 140ms ease,
+          filter 140ms ease, box-shadow 140ms ease;
+      }
+      :is(#dx-panel .types button, #dx-panel .actions button, #ev-drawer .card, #ev-drawer .star, #location-search button):active { scale: .97; }
+      #ev-drawer .event { transition: background-color 140ms ease; }
+      :is(#dx-panel, #ev-drawer, #location-search) select { transition: background-color 140ms ease, border-color 140ms ease; }
+    }
+    @media (forced-colors: active) {
+      :is(#dx-panel, #ev-drawer, #location-search) select:not([multiple]),
+      :is(#dx-panel, #ev-drawer, #location-search) select::picker(select) { appearance: auto; background-image: none; }
+    }
   </style>
 </head>
 <body>
   <main id="vmap" aria-label="재난 시각화 플랫폼 3D 지도"></main>
+  <section id="map-start" aria-labelledby="map-start-title">
+    <form id="map-start-form">
+      <h1 id="map-start-title">어느 지역의 재난 사건을 살펴볼까요?</h1>
+      <fieldset aria-label="지역 선택">
+        <div class="start-places">
+          <label><input type="radio" name="start-region" value="korea" checked>전국</label>
+          <label><input type="radio" name="start-region" value="seoul">서울</label>
+          <label><input type="radio" name="start-region" value="busan">부산</label>
+          <label><input type="radio" name="start-region" value="jeju">제주</label>
+        </div>
+      </fieldset>
+      <button type="submit">재난 사건 보기</button>
+      <div class="start-progress" role="progressbar" aria-label="지도 준비 중" hidden></div>
+    </form>
+  </section>
+  <p id="status" role="status" hidden></p>
   <script src="./config.js"></script>
   <script>
+    if (new URLSearchParams(location.search).has('settings')) document.querySelector('#map-start').hidden = true;
+    const startForm = document.querySelector('#map-start-form');
+    startForm.addEventListener('submit', event => {
+      event.preventDefault();
+      if (startForm.dataset.region) return;
+      startForm.dataset.region = startForm.elements['start-region'].value;
+      startForm.querySelector('fieldset').disabled = true;
+      const submit = startForm.querySelector('button');
+      submit.disabled = true;
+      submit.textContent = '지도 준비 중…';
+      startForm.querySelector('[role=progressbar]').hidden = false;
+      window.dispatchEvent(new Event('map-start-request'));
+    });
     const key = localStorage.getItem('korea-vworld-key') || window.KOREA_VWORLD_KEY;
     if (key) {
       const sdk = new URL('https://map.vworld.kr/js/webglMapInit.js.do');
@@ -53,18 +219,18 @@
   </script>
   <section id="location-search" aria-label="위치 검색" hidden>
     <form role="search">
+      <span class="search-grip" aria-hidden="true"></span>
       <select name="type" aria-label="검색 유형">
         <option value="place">장소</option>
         <option value="road">도로명 주소</option>
         <option value="parcel">지번 주소</option>
       </select>
-      <input name="query" type="search" aria-label="장소 또는 주소" placeholder="장소 또는 주소" required maxlength="100">
-      <button type="submit">검색</button>
+      <input name="query" type="search" aria-label="장소 또는 주소" placeholder="장소 또는 주소 검색" required maxlength="100">
+      <button type="submit" aria-label="검색" title="검색"><span class="search-icon" aria-hidden="true"></span></button>
     </form>
     <p role="status"></p>
     <ul id="search-results" aria-label="검색 결과"></ul>
   </section>
-  <p id="status" role="status">지도를 불러오는 중…</p>
   <!-- 키 설정 · 지역 이동: 평소엔 숨김, vworld.html?settings=1 일 때만 -->
   <aside hidden>
     <div class="controls"><select id="region" aria-label="지역 이동" disabled>
