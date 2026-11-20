@@ -442,6 +442,9 @@ function createEffect(type, ctx, S) {
     const o = {}; for (const d of def.params) o[d.key] = clamp(Number.isFinite(+q[d.key]) ? +q[d.key] : d.value, d.min, d.max);
     o.polygon = Array.isArray(q.polygon) && q.polygon.length >= 3 ? q.polygon : null; // 지도에 그린 영역 [[경도, 위도], …]
     o.waterBase = q.waterBase === 'point' || q.waterBase === 'sea' ? q.waterBase : (type === 'flood' ? 'point' : 'sea'); // 물 기준: 근처 바다 / 이 지점
+    for (const key of ['snowDepthCm', 'waterDepthM']) {
+      if (Number.isFinite(q[key]) && q[key] >= 0) o[key] = q[key];
+    }
     return o;
   }
   const parts = [], entities = [], tick = new Set(), add = e => (entities.push(viewer.entities.add(e)), entities[entities.length - 1]);
@@ -491,8 +494,8 @@ function createEffect(type, ctx, S) {
   let cloudKey = '', cloudTimer = 0;
   function cloudSpec() {
     if (type === 'typhoon') return { kind: 'storm', amount: clamp(p.wind / 50, .4, 1), gloom: env.gloom || .6, wind: p.wind * .6, dir: p.dir, precip: p.rain > 0 ? 'rain' : null, rate: clamp(p.rain / 120, 0, 1), radius: 25000 };
-    if (type === 'flood') return { kind: 'rain', amount: clamp(p.rain / 120, .4, 1), gloom: env.gloom || .5, wind: 6, dir: 200, precip: 'rain', rate: clamp(p.rain / 150, .2, 1), radius: 14000 };
-    if (type === 'snow') return { kind: 'snow', amount: clamp(p.rate / 8, .4, 1), gloom: env.gloom || .4, wind: p.wind, dir: 320, precip: 'snow', rate: clamp(p.rate / 8, .2, 1), radius: 16000 };
+    if (type === 'flood') return { kind: 'rain', amount: clamp(p.rain / 120, .4, 1), gloom: env.gloom || .5, wind: 6, dir: 200, precip: p.rain > 0 ? 'rain' : null, rate: p.rain > 0 ? clamp(p.rain / 150, .2, 1) : 0, radius: 14000 };
+    if (type === 'snow') return { kind: 'snow', amount: clamp(p.rate / 8, .4, 1), gloom: env.gloom || .4, wind: p.wind, dir: 320, precip: p.rate > 0 ? 'snow' : null, rate: p.rate > 0 ? clamp(p.rate / 8, .2, 1) : 0, radius: 16000 };
     return null;
   }
   function scheduleClouds() {
@@ -675,6 +678,12 @@ function createEffect(type, ctx, S) {
   let snowT = p.time, snowLast = null;
   tick.add(now => {
     if (type !== 'snow') return;
+    if (p.snowDepthCm != null) {
+      if (S.C) S.C.setPrecip(false);
+      S.setLook({ ...env, snow: 0 });
+      S.look.cover = clamp(p.snowDepthCm / 15, 0, 1);
+      return;
+    }
     const dt = snowLast == null ? 0 : now - snowLast; snowLast = now;
     const end = p.hours + p.melt; snowT = Math.min(end, snowT + dt * end / 45);
     const falling = snowT < p.hours;

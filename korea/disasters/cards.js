@@ -8,6 +8,7 @@
    저장한 카드는 이 브라우저(localStorage)에 보관 */
 
 import { makeDraggable } from './draggable.js';
+import { articleEffect, validPosition } from './article-effect.js';
 
 const TYPE_LABEL = {
   flood: ['호우 · 홍수', '🌧', '#2d6cdf'], typhoon: ['태풍', '🌀', '#5b4bd6'], heavysnow: ['대설', '❄', '#5aa0c8'], coldwave: ['한파', '🥶', '#3f8fb5'],
@@ -15,7 +16,7 @@ const TYPE_LABEL = {
   tsunami: ['지진해일', '🌊', '#1f6f8b'], earthquake: ['지진', '〰', '#a0522d'], wildfire: ['산불', '🔥', '#d2401f'], dry: ['건조', '🍂', '#b5832e'],
   stormsurge: ['폭풍해일', '🌊', '#2a6f97'], fog: ['안개', '🌁', '#7d8a93'], other: ['기타', '•', '#6c757d'],
 };
-const SRC_LABEL = { article: ['기사', '#3fb37f'], derived: ['기사로 계산', '#5aa0c8'], kma_current: ['기상청 실황', '#c9a227'], default: ['기본값 (가정)', '#8a8f98'] };
+const SRC_LABEL = { article: ['기사', '#3fb37f'], derived: ['기사로 계산', '#5aa0c8'], display: ['표현 설정', '#8a8f98'], default: ['보조 가정', '#8a8f98'] };
 const SAVED_KEY = 'dx-saved-cards';
 const inKorea = c => c.lat != null && c.lon != null && c.lat >= 32 && c.lat <= 39.5 && c.lon >= 124 && c.lon <= 132;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -149,28 +150,42 @@ export function attachCardList({ viewer, Cesium, panel }) {
   async function openDetail(id) {
     $('ev-list').hidden = true; const box = $('ev-detail'); box.hidden = false; box.innerHTML = '<div class="empty">불러오는 중…</div>';
     let d; try { d = await api('/api/disasters/' + id); } catch (e) { box.innerHTML = `<div class="empty">상세를 불러오지 못했습니다.<br>${esc(e.message)}</div><div class="btns"><button type="button" id="ev-back">← 목록</button></div>`; box.querySelector('#ev-back').onclick = renderList; return; }
-    const [name, icon, color] = TYPE_LABEL[d.type] || TYPE_LABEL.other, eff = fixEffect(d);
+    const [name, icon, color] = TYPE_LABEL[d.type] || TYPE_LABEL.other, eff = articleEffect(d, window.DisasterFX?.TYPES);
+    const origin = validPosition(eff?.position) ? eff.position : { longitude: d.lon, latitude: d.lat };
     const def = eff && window.DisasterFX && window.DisasterFX.TYPES[eff.type];
-    const rows = def ? def.params.filter(q => q.key !== 'exag' && q.key !== 'speed').map(q => {
-      const has = eff.params[q.key] != null, src = SRC_LABEL[has ? (eff.sources[q.key] || 'article') : 'default'];
+    const fields = def ? [...def.params] : [];
+    if (eff?.params.snowDepthCm != null) fields.unshift({ key: 'snowDepthCm', label: '쌓인 눈 깊이', unit: 'cm' });
+    if (eff?.params.waterDepthM != null) fields.unshift({ key: 'waterDepthM', label: '침수 깊이', unit: 'm' });
+    const rows = fields.filter(q => q.key !== 'exag' && q.key !== 'speed' && !(eff?.params.snowDepthCm != null && ['rate', 'hours', 'melt', 'time'].includes(q.key))).map(q => {
+      const has = eff.params[q.key] != null, src = SRC_LABEL[has ? eff.sources[q.key] : 'default'] || SRC_LABEL.default;
       return `<dt>${esc(q.label)}</dt><dd>${esc(has ? eff.params[q.key] : q.value)} ${esc(q.unit)}</dd><dd><span class="src" style="color:${src[1]};border-color:${src[1]}66">${src[0]}</span></dd>`;
-    }).join('') : '';
+    }).join('');
     box.innerHTML = `
       <div class="band" style="display:inline-flex;gap:6px;align-items:center;background:${color};color:#fff;border-radius:6px;padding:3px 8px;font-weight:600">${icon} ${esc(name)}</div>
       <h3>${esc(d.title)}</h3>
       <div class="meta">${esc(d.location || '위치 미상')}${d.date ? ' · ' + esc(String(d.date).slice(0, 10)) : ''}${d.scale ? '<br>피해 규모: ' + esc(d.scale) : ''}</div>
       ${d.summary ? `<p>${esc(d.summary)}</p>` : ''}
-      <div class="btns"><button type="button" class="primary" id="ev-run" ${eff ? '' : 'disabled'}>▶ 시뮬레이션 실행</button><button type="button" id="ev-fly" ${d.lat != null ? '' : 'disabled'}>지도에서 위치 보기</button>
+      <div class="btns"><button type="button" class="primary" id="ev-run" ${eff?.ready && validPosition(origin) ? '' : 'disabled'}>발생 지역에 적용</button><button type="button" id="ev-here" ${eff?.ready ? '' : 'disabled'}>현재 지역에 같은 규모 적용</button><button type="button" id="ev-fly" ${validPosition(origin) ? '' : 'disabled'}>지도에서 위치 보기</button>
         <button type="button" id="ev-save">${isSaved(d.id) ? '★ 저장됨' : '☆ 저장'}</button><button type="button" id="ev-back">← 목록</button></div>
-      ${eff ? `<h4>시뮬레이션 입력값 · 출처</h4><dl>${rows}</dl>
+      <p class="note" id="ev-result" role="status"></p>
+      ${eff ? `<h4>적용할 규모 · 출처</h4><dl>${rows}</dl>
+        <p class="note">${eff.ready ? '기사의 수치를 적용합니다. 보조 가정과 지형에 따라 표현은 달라지며 실제 피해 예측은 아닙니다.' : esc(eff.reason || '기사에서 재난 규모 수치가 확인되지 않아 적용할 수 없습니다.')} 현재 날씨는 당시 규모에 섞지 않습니다.${eff.params.snowDepthCm != null && d.type === 'heavysnow' ? ' 누적 적설은 표면 덮임으로 표현합니다. 실제 두께의 3D 눈 모델은 아니며 강설 시간·속도는 추정하지 않습니다.' : ''}</p>
         <p class="note">위치는 AI가 지역 이름으로 추정한 지역 중심입니다. 지도에서 다른 곳을 클릭하면 발생 지점을 옮길 수 있습니다.</p>`
         : `<p class="note">이 재난 종류(${esc(name)})는 아직 지도 효과가 없습니다.</p>`}
       ${(d.sources || []).length ? `<h4>원문 기사 (${d.sources.length})</h4><ul>${d.sources.map(s => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a> <span class="meta">${esc(s.source || '')} ${esc(s.published_at || '')}</span></li>`).join('')}</ul>` : ''}
       <details id="ev-guide"><summary>행동요령</summary><div class="empty">불러오는 중…</div></details>`;
     box.querySelector('#ev-back').onclick = renderList;
     box.querySelector('#ev-save').onclick = () => { toggleSave(d); openDetail(id); };
-    box.querySelector('#ev-fly').onclick = () => fly(d);
-    box.querySelector('#ev-run').onclick = () => run(d, eff);
+    box.querySelector('#ev-fly').onclick = () => fly(origin);
+    box.querySelector('#ev-run').onclick = () => run(d, eff, origin, true, box);
+    box.querySelector('#ev-here').onclick = () => {
+      const canvas = viewer.scene.canvas;
+      const ray = viewer.camera.getPickRay(new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2));
+      const point = ray && viewer.scene.globe.pick(ray, viewer.scene);
+      if (!point) { box.querySelector('#ev-result').textContent = '지도 가운데에 지면이 보이도록 이동해 주세요.'; return; }
+      const geo = Cesium.Cartographic.fromCartesian(point);
+      run(d, eff, { longitude: Cesium.Math.toDegrees(geo.longitude), latitude: Cesium.Math.toDegrees(geo.latitude) }, false, box);
+    };
     box.querySelector('#ev-guide').addEventListener('toggle', async e => {
       const g = e.target; if (!g.open || g.dataset.done) return; g.dataset.done = 1;
       try {
@@ -180,22 +195,20 @@ export function attachCardList({ viewer, Cesium, panel }) {
     });
   }
 
-  // 서버 값 보정 (프론트 의미에 맞춤): 한파는 눈이 오지 않게, 기사 해일 높이는 이미 해안 높이라 처오름 배율 1
-  function fixEffect(d) {
-    const e = d.map_effect; if (!e || !e.supported) return null;
-    const params = { ...e.params }, sources = { ...e.sources };
-    if (d.type === 'coldwave' && params.rate == null) { params.rate = 0; sources.rate = 'default'; }
-    if (e.type === 'tsunami' && params.height != null && params.runup == null) { params.runup = 1; sources.runup = 'derived'; }
-    return { ...e, params, sources };
-  }
-  function fly(d, done) {
-    if (d.lat == null || d.lon == null) { done && done(); return; }
+  function fly(at) {
+    if (!validPosition(at)) return;
     // 발생 지점 남쪽 3 km, 높이 1.6 km에서 비스듬히 내려다봄
-    viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(d.lon, d.lat - .027, 1600), orientation: { heading: 0, pitch: Cesium.Math.toRadians(-32), roll: 0 }, duration: 2.2, complete: done });
+    viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(at.longitude, at.latitude - .027, 1600), orientation: { heading: 0, pitch: Cesium.Math.toRadians(-32), roll: 0 }, duration: 2.2 });
   }
-  function run(d, eff) {
-    if (!eff || !window.koreaDisaster) return;
-    fly(d, () => window.koreaDisaster.set(eff.type, eff.params, eff.position || undefined, { cardId: d.id, title: d.title, sources: eff.sources }));
+  async function run(d, eff, at, move, box) {
+    if (!eff?.ready || !validPosition(at) || !window.koreaDisaster) return;
+    const result = box.querySelector('#ev-result');
+    result.textContent = '기사 규모를 적용하는 중…';
+    try {
+      if (move) fly(at);
+      await window.koreaDisaster.set(eff.type, eff.params, at, { cardId: d.id, title: d.title, sources: eff.sources });
+      result.textContent = `${move ? '발생 지역' : '현재 지역'} (${at.latitude.toFixed(4)}°, ${at.longitude.toFixed(4)}°)에 기사 규모를 적용했습니다.`;
+    } catch (e) { result.textContent = '적용하지 못했습니다: ' + e.message; }
   }
 
   root.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {

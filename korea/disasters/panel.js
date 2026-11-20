@@ -176,6 +176,8 @@ export function attachDisasterPanel({ viewer, Cesium, disasters }) {
     if (rebuild || built !== type) {
       built = type; $('dx-params').innerHTML = '';
       for (const q of t.params) {
+        if (params.snowDepthCm != null && ['rate', 'hours', 'melt', 'time'].includes(q.key)) continue;
+        if (params.waterDepthM != null && ['hours', 'drain'].includes(q.key)) continue;
         const w = document.createElement('div');
         w.innerHTML = `<div class="row"><label></label><span><input type="number"><em></em></span></div><input type="range">`;
         const num = w.querySelector('input[type=number]'), rng = w.querySelector('input[type=range]');

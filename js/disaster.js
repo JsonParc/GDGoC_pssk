@@ -59,11 +59,12 @@ const TYPES = {
     name: '집중호우 · 홍수', icon: '🌧', desc: '시간당 강수량이 배수 능력을 넘으면 넘친 만큼 저지대에 물이 찹니다.',
     params: [P('rain', '시간당 강수량', 'mm/h', 0, 200, 1, 80), P('hours', '지속 시간', 'h', 1, 72, 1, 12), P('drain', '배수 능력', 'mm/h', 0, 120, 1, 40)],
     derive(p) {
+      if (p.waterDepthM != null) return [['적용 침수 깊이', `${fmt(p.waterDepthM, 2)} m`], ['물 기준', '선택 지점 지면']];
       return [['누적 강수량', `${fmt(p.rain * p.hours)} mm`], ['배수 초과분', `${fmt(Math.max(0, p.rain - p.drain) * p.hours)} mm`],
         ['저지대 침수 깊이', `${fmt(Phys.floodDepth(p.rain, p.drain, p.hours), 1)} m`], ['시정 (비)', `${fmt(Phys.rainVis(p.rain) / 1000, 1)} km`], ['호우 특보', p.rain * 3 >= 90 ? '경보 수준' : p.rain * 3 >= 60 ? '주의보 수준' : '해당 없음']];
     },
     env: p => ({ rain: p.rain, wind: 6, dir: 200, gloom: clamp(.25 + p.rain / 250, 0, .9), vis: Phys.rainVis(p.rain), tint: 0x67717a, tintAmt: .6,
-      sea: .45, water: Phys.floodDepth(p.rain, p.drain, p.hours), mud: 1 }),
+      sea: .45, water: p.waterDepthM ?? Phys.floodDepth(p.rain, p.drain, p.hours), mud: 1 }),
   },
   quake: {
     name: '지진', icon: '〰', desc: '규모 · 깊이 · 거리로 지반 가속도를 추정하고 그 세기로 화면을 흔듭니다. 재생하면 흔들림 시간만큼 반복합니다.',
@@ -122,6 +123,7 @@ const TYPES = {
     name: '대설 · 한파', icon: '❄', desc: '눈이 바람에 날리고 시야가 하얗게 줄어듭니다.',
     params: [P('rate', '시간당 적설', 'cm/h', 0, 15, .5, 3), P('hours', '눈 오는 시간', 'h', 1, 48, 1, 8), P('melt', '다 녹는 데 걸리는 시간', 'h', 1, 240, 1, 48), P('time', '경과 시간', 'h', 0, 300, 1, 0), P('wind', '풍속', 'm/s', 0, 25, .5, 6), P('temp', '기온', '°C', -30, 2, .5, -6)],
     derive(p) {
+      if (p.snowDepthCm != null) return [['적용 적설 깊이', `${fmt(p.snowDepthCm, 1)} cm`], ['표현 방식', '적설량에 따른 표면 덮임 · 두께 메시 아님']];
       const total = p.rate * p.hours, now = Phys.snowDepth(p, p.time);
       return [['누적 적설 (최대)', `${fmt(total, 1)} cm`], ['경과 시간의 적설', `${fmt(now, 1)} cm (${p.time < p.hours ? '내리는 중' : now > 0 ? '녹는 중' : '다 녹음'})`], ['다 녹는 시각', `${fmt(p.hours + p.melt)} 시간 뒤`], ['시정 (눈)', `${fmt(Phys.snowVis(p.rate) / (1 + p.wind / 15) / 1000, 2)} km`], ['체감 온도', `${fmt(Phys.windChill(p.temp, p.wind), 1)} °C`],
         ['대설 특보 (24시간)', total >= 20 ? '경보 수준' : total >= 5 ? '주의보 수준' : '해당 없음']];
