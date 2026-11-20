@@ -42,6 +42,33 @@ function searchVWorld(key, query, type) {
   });
 }
 
+/* 좌표 → 주소 구조 (브이월드 주소 변환 getAddress, JSONP). 지역 변화 분석에 보낼 지역 이름("서울특별시 강남구 대치동")을 만듦.
+   결과: response.result[0].structure { level1 시도, level2 시군구, level4L 법정동, level4A 행정동 … }, 주소가 없으면(바다 등) null */
+export function reverseGeocode(key, longitude, latitude) {
+  return new Promise((resolve, reject) => {
+    if (!key) { reject(new Error('브이월드 키가 없어 주소를 찾을 수 없습니다.')); return; }
+    const callback = `koreaVworldAddress${++requestId}`;
+    const url = new URL('https://api.vworld.kr/req/address');
+    url.search = new URLSearchParams({
+      service: 'address', request: 'getAddress', version: '2.0', crs: 'epsg:4326', point: `${longitude},${latitude}`,
+      format: 'json', type: 'parcel', zipcode: 'false', simple: 'false', errorformat: 'json', key, domain: location.origin, callback,
+    });
+    const script = document.createElement('script');
+    const timer = setTimeout(() => fail('주소 변환 응답이 지연되고 있습니다.'), 8000);
+    function cleanup() { clearTimeout(timer); delete window[callback]; script.remove(); }
+    function fail(message) { cleanup(); reject(new Error(message)); }
+    window[callback] = ({ response } = {}) => {
+      if (response?.status === 'OK') { cleanup(); resolve(response.result?.[0]?.structure ?? null); }
+      else if (response?.status === 'NOT_FOUND') { cleanup(); resolve(null); }
+      else fail('주소를 찾지 못했습니다.');
+    };
+    script.onload = () => { if (window[callback]) fail('브이월드가 주소를 반환하지 않았습니다.'); };
+    script.onerror = () => fail('주소 변환 서버에 연결하지 못했습니다.');
+    script.src = url.href;
+    document.head.append(script);
+  });
+}
+
 function mapPlace(item, query) {
   const longitude = Number.parseFloat(item.point?.x), latitude = Number.parseFloat(item.point?.y);
   if (!Number.isFinite(longitude) || !Number.isFinite(latitude) || Math.abs(longitude) > 180 || Math.abs(latitude) > 90) return null;
@@ -99,6 +126,8 @@ export function enableLocationSearch({ key, viewer, Cesium }) {
     input.value = title;
     results.replaceChildren();
     input.focus();
+    // 지역 변화 분석 대상 (재난 사건 창의 '지역 분석' 탭)
+    window.dispatchEvent(new CustomEvent('map-place-selected', { detail: { longitude, latitude, title } }));
   }
 
   form.addEventListener('submit', async event => {

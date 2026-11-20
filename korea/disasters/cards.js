@@ -9,6 +9,7 @@
 
 import { makeDraggable, makeWindow } from './draggable.js';
 import { articleEffect, validPosition } from './article-effect.js';
+import { attachRegionAnalysis } from './region-analysis.js';
 
 const TYPE_LABEL = {
   flood: ['호우 · 홍수', '🌧', '#2d6cdf'], typhoon: ['태풍', '🌀', '#5b4bd6'], heavysnow: ['대설', '❄', '#5aa0c8'], coldwave: ['한파', '🥶', '#3f8fb5'],
@@ -122,7 +123,7 @@ export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
   const typeOptions = Object.entries(TYPE_LABEL).map(([k, [n]]) => `<button type="button" data-type="${k}" aria-pressed="false">${n}</button>`).join('');
   root.innerHTML = `
     <header><b>재난 사건</b><div id="ev-cloud-slot" aria-hidden="true"></div><button type="button" id="ev-clear" hidden>선택 해제</button><button type="button" id="ev-close" aria-label="목록 접기" title="접기">›</button></header>
-    <div class="tabs"><button type="button" class="on" data-tab="recent">최근<small id="ev-total"></small></button><button type="button" data-tab="saved">저장됨<small id="ev-saved"></small></button></div>
+    <div class="tabs"><button type="button" class="on" data-tab="recent">최근<small id="ev-total"></small></button><button type="button" data-tab="saved">저장됨<small id="ev-saved"></small></button><button type="button" data-tab="region" title="지도에서 고른 지역의 과거 재난 · 방재 시설 변화">지역 분석</button></div>
     <div class="filters"><details id="ev-type-menu"><summary aria-label="재난 종류: 모든 재난"><span id="ev-type-label">모든 재난</span></summary>
       <div id="ev-type-options"><button type="button" data-type="">모든 재난</button>${typeOptions}</div></details>
       <select id="ev-region" aria-label="지역"><option value="kr">대한민국 먼저</option><option value="krOnly">대한민국만</option><option value="world">해외만</option>
@@ -130,7 +131,7 @@ export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
       <button type="button" id="ev-refresh" aria-label="새로 불러오기" title="새로 불러오기"><span aria-hidden="true">↻</span></button></div>
     <div class="event-tools"><button type="button" id="ev-pins" aria-pressed="true">지도 핀</button></div>
     <div class="active-event" id="ev-active" hidden><span id="ev-active-label" role="status"></span><button type="button" id="ev-stop">효과 끄기</button></div>
-    <div class="body"><div id="ev-list"></div><div id="ev-detail" class="detail" hidden></div></div>
+    <div class="body"><div id="ev-list"></div><div id="ev-detail" class="detail" hidden></div><div id="ev-region-box" hidden></div></div>
     <p class="note drawer-note">기사 기반 시뮬레이션 · 실시간 예측 아님</p>`;
   const opener = document.createElement('button'); opener.id = 'ev-open'; opener.type = 'button';
   opener.innerHTML = '<span aria-hidden="true">‹</span> 재난 사건'; opener.classList.add('closed');
@@ -320,7 +321,8 @@ export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
     detailRequest = null;
     $('ev-clear').hidden = true;
     $('ev-saved').textContent = saved.length;
-    $('ev-detail').hidden = true; $('ev-list').hidden = false;
+    $('ev-detail').hidden = true; $('ev-list').hidden = tab === 'region';
+    if (tab === 'region') return; // 지역 분석 탭은 region-analysis.js가 그림
     const region = $('ev-region').value;
     const local = LOCAL_REGIONS[region];
     $('ev-total').textContent = region === 'kr' && Number.isFinite(total) ? total : '';
@@ -432,9 +434,19 @@ export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
     } catch (e) { result.textContent = '적용하지 못했습니다: ' + e.message; }
   }
 
-  root.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
-    root.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b)); tab = b.dataset.tab; renderList();
-  });
+  // 지역 변화 분석 탭 (지도 클릭 · 장소 검색으로 고른 지역의 과거 이력 · 홍수 전후 비교)
+  const regionUI = attachRegionAnalysis({ box: $('ev-region-box'), apiBase: API, panel, typeLabel: TYPE_LABEL, esc,
+    onCardSaved: () => loadList(), openCard: id => { setTab('recent'); openDetail(id); } });
+  function setTab(next) {
+    tab = next;
+    root.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x.dataset.tab === next));
+    const region = next === 'region';
+    root.querySelector('.filters').hidden = region; root.querySelector('.event-tools').hidden = region;
+    $('ev-region-box').hidden = !region;
+    if (region) regionUI.show(); else regionUI.hide();
+    renderList();
+  }
+  root.querySelectorAll('.tabs button').forEach(b => b.onclick = () => setTab(b.dataset.tab));
   const typeMenu = $('ev-type-menu');
   const typeTrigger = typeMenu.querySelector('summary');
   const typeButtons = [...$('ev-type-options').querySelectorAll('button')];
@@ -465,5 +477,5 @@ export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
   $('ev-region').onchange = renderList;
   $('ev-refresh').onclick = () => loadList();
   loadList();
-  return { reload: loadList, openDetail, setOpen, syncSimulation, pickMapPin };
+  return { reload: loadList, openDetail, setOpen, syncSimulation, pickMapPin, showRegionAnalysis: () => { setOpen(true); setTab('region'); } };
 }
