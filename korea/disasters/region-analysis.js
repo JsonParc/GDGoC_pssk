@@ -73,7 +73,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
     let res;
     try { res = await fetch(apiBase + path, options); } catch { throw Object.assign(new Error('분석 서버에 연결하지 못했습니다. 잠시 뒤 다시 시도해 주세요.'), { status: 0 }); }
     let body = null; try { body = await res.json(); } catch { /* 본문 없음 */ }
-    if (!res.ok) throw Object.assign(new Error(errorMessage(res.status, body)), { status: res.status });
+    if (!res.ok) throw Object.assign(new Error(errorMessage(res.status, body)), { status: res.status, retryAfter: Number(res.headers.get('Retry-After')) || 0 });
     return body;
   }
 
@@ -149,7 +149,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
     renderTarget();
   }
   function renderTarget() {
-    const t = st.target, busy = st.phase === 'starting' || st.phase === 'running';
+    const t = st.target, busy = st.phase === 'starting' || st.phase === 'running' || waitLeft() > 0; // 요청 제한 대기 중에도 잠금
     if (!t) {
       $('ra-target').innerHTML = `<h4>지역 변화 분석</h4><p class="note">지도를 클릭하거나 위쪽 검색창으로 장소를 고르면, 그 지역의 과거 재난 이력과 방재 시설 변화를 기사에서 찾아 정리합니다.</p>`;
       return;
@@ -163,7 +163,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
         <select id="ra-scope" aria-label="분석 범위"><option value="all">모든 재난 이력</option><option value="flood">홍수 + 배수 시설</option></select>
         <select id="ra-radius" aria-label="반경"><option value="2">반경 2 km</option><option value="5">반경 5 km</option><option value="10">반경 10 km</option><option value="20">반경 20 km</option></select>
       </div>
-      <div class="ra-row"><button type="button" class="primary" id="ra-go" ${busy || !inKorea ? 'disabled' : ''}>${busy ? '분석 중…' : '이 지역 분석'}</button>
+      <div class="ra-row"><button type="button" class="primary" id="ra-go" ${busy || !inKorea ? 'disabled' : ''}>${goLabel()}</button>
         ${st.result ? `<button type="button" id="ra-refresh" ${busy ? 'disabled' : ''} title="24시간 캐시를 무시하고 다시 검색 (10분 안에는 캐시)">새로 분석</button>` : ''}</div>
       ${inKorea ? '' : '<p class="note ra-err">대한민국 안의 지점만 분석할 수 있습니다. 지도에서 위치를 다시 골라 주세요. (확인 필요)</p>'}`;
     $('ra-scope').value = st.scope; $('ra-radius').value = String(st.radius);
@@ -207,7 +207,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
       if (r.result) return finish(r.result, token, r.generated_at);
       st.phase = 'running'; renderTarget();
       await poll(r.job_id, token);
-    } catch (e) { if (token === runToken) fail(e.message); }
+    } catch (e) { if (token === runToken) fail(e.message, e.status === 429 ? e.retryAfter : 0); }
   }
   async function poll(jobId, token) {
     const t0 = performance.now();
@@ -228,8 +228,22 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
       await sleep(POLL_MS);
     }
   }
-  function fail(message) {
+  // 요청 제한(429)이면 서버가 알려 준 남은 시간 동안 다시 시도 · 분석을 잠그고 1초마다 남은 시간을 보여 줌
+  let waitTimer = 0;
+  const waitLeft = () => Math.max(0, Math.ceil(((st.retryUntil || 0) - Date.now()) / 1000));
+  const waitText = s => s >= 60 ? `${Math.floor(s / 60)}분 ${String(s % 60).padStart(2, '0')}초` : `${s}초`;
+  const goLabel = () => waitLeft() ? `${waitText(waitLeft())} 뒤 분석 가능` : st.phase === 'starting' || st.phase === 'running' ? '분석 중…' : '이 지역 분석';
+  function fail(message, retryAfter = 0) {
     st.phase = 'failed'; st.error = message || '분석에 실패했습니다.';
+    st.retryUntil = retryAfter > 0 ? Date.now() + retryAfter * 1000 : 0;
+    clearInterval(waitTimer);
+    // 1초마다 버튼 글자와 상태만 갱신 (지역 이름 입력칸은 다시 그리지 않음), 다 기다리면 한 번 다시 그림
+    if (st.retryUntil) waitTimer = setInterval(() => {
+      const go = $('ra-go');
+      if (go) { go.textContent = goLabel(); go.disabled = waitLeft() > 0 || !inKoreaPoint(st.target); }
+      renderStatus();
+      if (!waitLeft()) { clearInterval(waitTimer); renderTarget(); }
+    }, 1000);
     renderTarget(); renderStatus();
   }
   function finish(result, token, generatedAt) {
@@ -245,7 +259,8 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
     if (st.phase === 'idle') { el.hidden = true; return; }
     el.hidden = false;
     if (st.phase === 'failed') {
-      el.innerHTML = `<h4>분석 실패</h4><p class="note ra-err" role="alert">${esc(st.error)}</p><div class="ra-row"><button type="button" id="ra-retry">다시 시도</button></div>`;
+      const left = waitLeft();
+      el.innerHTML = `<h4>분석 실패</h4><p class="note ra-err" role="alert">${esc(st.error)}</p><div class="ra-row"><button type="button" id="ra-retry" ${left ? 'disabled' : ''}>${left ? `${waitText(left)} 뒤 다시 시도` : '다시 시도'}</button></div>`;
       $('ra-retry').onclick = () => analyze(false);
       return;
     }
