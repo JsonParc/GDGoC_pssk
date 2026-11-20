@@ -5,7 +5,7 @@
    API: window.koreaDisaster.set(type, params, { longitude, latitude }, data) · .stop() · .get() · .sky(id) · .sea(id) */
 import { registerDisasterEffects } from './fx.js';
 import { attachCardList } from './cards.js';
-import { makeDraggable } from './draggable.js';
+import { makeDraggable, makeWindow } from './draggable.js';
 
 const CSS = `
 #dx-panel.closed,#dx-open.closed{display:none!important}
@@ -55,7 +55,7 @@ const CSS = `
 #dx-panel .tabs button{position:relative;border:0;border-radius:0;padding:11px 0 13px}
 #dx-panel .tabs button.on{background:none;color:#fff;font-weight:700}
 #dx-panel .tabs button.on::after{content:"";position:absolute;inset:auto 0 -1px;height:2px;background:var(--accent)}
-#dx-panel .body{min-height:0;padding:0 18px 15px;scrollbar-width:none}
+#dx-panel .body{flex:1 1 auto;min-height:0;padding:0 18px 15px;scrollbar-width:none}
 #dx-panel h3{margin:15px 0 9px;font-weight:700;letter-spacing:normal}
 #dx-panel .types{grid-template-columns:repeat(2,minmax(0,1fr))}
 #dx-panel .types button{position:relative;display:flex;align-items:center;gap:8px;min-height:40px;padding:9px 10px;text-align:left;background:none;border:0;font:inherit}
@@ -149,7 +149,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
   </svg>`;
   document.body.append(root, opener, tapHint);
   const $ = id => root.querySelector('#' + id);
-  makeDraggable(root, root.querySelector('header'), 'dx-panel-pos'); // 제목 줄을 끌어 옮김
+  makeWindow(root, root.querySelector('header'), 'dx-panel-pos'); // 안쪽을 끌어 옮기고 테두리를 끌어 크기 조절 (앱 창처럼)
   makeDraggable(opener, opener, 'dx-opener-pos');
   // 접기 / 펴기 (hidden 속성은 display 규칙에 덮여서 클래스로)
   function setOpen(open) {
@@ -318,7 +318,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
     for (const [k, v] of t.derive(params)) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = k; dd.textContent = v; $('dx-out').append(dt, dd); }
     if (document.activeElement !== $('dx-json')) $('dx-json').value = JSON.stringify(data == null ? { type, params } : { type, params, data }, null, 2);
     $('dx-apply').textContent = running === type ? '다시 적용' : '적용';
-    const WATERY = ['typhoon', 'tsunami', 'sealevel', 'flood'];
+    const WATERY = ['typhoon', 'sealevel', 'flood']; // 해일은 늘 바다에서 들어와 물 기준을 고르지 않음
     $('dx-base-row').hidden = !WATERY.includes(type) || (type === 'flood' && !!params.polygon);
     $('dx-base').value = params.waterBase || (type === 'flood' ? 'point' : 'sea');
     const canDraw = DRAWABLE.includes(type);

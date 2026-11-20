@@ -1,8 +1,12 @@
-// 예비 지도 (브이월드 점검 · 장애 때). vworld.js와 같은 순서로 컨트롤 · 재난 패널을 붙이고 OpenStreetMap 3D 건물을 세움
+// 예비 지도 (브이월드 점검 · 장애 때). vworld.js와 같은 순서로 컨트롤 · 위치 검색 · 재난 패널을 붙이고 OpenStreetMap 3D 건물을 세움.
+// 마우스 조작(tile-coverage.js) · 오른쪽 지도 버튼(map-nav.js)을 브이월드 지도와 똑같이 맞춤
 import { demTiles, demZoom, getElevation } from './dem.js';
 import { enableDisasterControls } from './disasters/controls.js';
 import { attachDisasterPanel } from './disasters/panel.js';
 import { createOsmBuildings } from './disasters/osm-buildings.js';
+import { enableLocationSearch } from './location-search.js';
+import { improveTileCoverage } from './tile-coverage.js';
+import { createMapNavigation } from './map-nav.js';
 
 const { Cesium } = window;
 Cesium.Ion.defaultAccessToken = '';
@@ -58,9 +62,15 @@ viewer.clock.currentTime = Cesium.JulianDate.fromIso8601(new URLSearchParams(loc
 viewer.scene.globe.enableLighting = true;
 const params = new URLSearchParams(location.search);
 const [lng, lat, h, pitch] = (params.get('view') || '126.978,37.552,1050,-30').split(',').map(Number);
-viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(lng, lat, h), orientation: { heading: Cesium.Math.toRadians(+(params.get('heading') || 0)), pitch: Cesium.Math.toRadians(pitch), roll: 0 } });
+const homeView = { destination: Cesium.Cartesian3.fromDegrees(lng, lat, h), orientation: { heading: Cesium.Math.toRadians(+(params.get('heading') || 0)), pitch: Cesium.Math.toRadians(pitch), roll: 0 } };
+viewer.camera.setView(homeView);
+improveTileCoverage(viewer.scene, Cesium);
+createMapNavigation(viewer, Cesium, homeView);
 
 const disasters = enableDisasterControls(viewer, Cesium);
+// 위치 검색은 브이월드 검색 API라 키가 있을 때만 (키는 브이월드 지도와 같은 것)
+const vworldKey = (() => { try { return localStorage.getItem('korea-vworld-key'); } catch { return null; } })() || window.KOREA_VWORLD_KEY;
+if (vworldKey) enableLocationSearch({ key: vworldKey, viewer, Cesium });
 const eventRegion = params.get('events') === 'nearby' ? { longitude: lng, latitude: lat } : params.get('events');
 const disasterPanel = attachDisasterPanel({ viewer, Cesium, disasters, eventRegion });
 createOsmBuildings(viewer, Cesium);

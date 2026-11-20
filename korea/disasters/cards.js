@@ -7,7 +7,7 @@
    카드 → "시뮬레이션 실행": 카메라를 발생 지점으로 옮기고 koreaDisaster.set(map_effect.type, params, position)
    저장한 카드는 이 브라우저(localStorage)에 보관 */
 
-import { makeDraggable } from './draggable.js';
+import { makeDraggable, makeWindow } from './draggable.js';
 import { articleEffect, validPosition } from './article-effect.js';
 
 const TYPE_LABEL = {
@@ -24,7 +24,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<':
 const loadSaved = () => { try { return JSON.parse(localStorage.getItem(SAVED_KEY) || '[]'); } catch { return []; } };
 const storeSaved = list => { try { localStorage.setItem(SAVED_KEY, JSON.stringify(list)); } catch { /* 저장 불가 (사생활 보호 모드 등) */ } };
 
-const CSS = `
+const STYLE = `
 #ev-drawer{--accent:linear-gradient(90deg,#b4d29a,#99d2ad 55%,#7fc3b6);position:absolute;z-index:3;top:var(--map-panel-top,60px);right:var(--map-navigation-gap,110px);width:min(var(--map-side-panel-width,352px),calc(100vw - 130px));max-height:calc(100dvh - 108px);display:flex;flex-direction:column;
   color-scheme:dark;background:#202c2c;color:#f1f5f0;border:1px solid #425552;border-radius:15px;font-size:13.75px;line-height:1.45;box-shadow:0 6px 24px #0006;box-sizing:border-box}
 #ev-drawer *{box-sizing:border-box}
@@ -117,7 +117,7 @@ const CSS = `
 export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
   const host = location.hostname;
   const API = (window.DISASTER_API_URL || (host === 'localhost' || host === '127.0.0.1' ? 'http://localhost:8001' : '')).replace(/\/$/, '');
-  const style = document.createElement('style'); style.textContent = CSS; document.head.append(style);
+  const style = document.createElement('style'); style.textContent = STYLE; document.head.append(style);
   const root = document.createElement('section'); root.id = 'ev-drawer'; root.setAttribute('aria-label', '재난 사건 목록');
   const typeOptions = Object.entries(TYPE_LABEL).map(([k, [n]]) => `<button type="button" data-type="${k}" aria-pressed="false">${n}</button>`).join('');
   root.innerHTML = `
@@ -148,7 +148,7 @@ export function attachCardList({ viewer, Cesium, panel, initialRegion }) {
     $('ev-region').value = nearby ? 'nearby' : Object.hasOwn(LOCAL_REGIONS, value) ? value : value === 'korea' ? 'krOnly' : 'kr';
     if (total !== null) renderList();
   }
-  makeDraggable(root, root.querySelector('header'), 'ev-drawer-pos'); // 제목 줄을 끌어 옮김
+  makeWindow(root, root.querySelector('header'), 'ev-drawer-pos'); // 안쪽을 끌어 옮기고 테두리를 끌어 크기 조절 (앱 창처럼)
   makeDraggable(opener, opener, 'ev-opener-pos');
   function setOpen(open) {
     root.classList.toggle('closed', !open);

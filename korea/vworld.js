@@ -15,11 +15,16 @@ const storageKey = 'korea-vworld-key';
 let ready = false;
 const pageOptions = new URLSearchParams(location.search);
 const settingsMode = pageOptions.has('settings');
-let resolveMap;
-const mapReady = new Promise(resolve => { resolveMap = resolve; });
+// 지도 상태: 브이월드가 늦게라도 뜨면(20초 지연 판정 뒤라도) 그 지도를 씀. 실패는 시작하기를 누른 순간에만 예비 지도로 보냄
+let mapInfo = null, mapFailure = null;
+const mapWaiters = [];
+const mapState = () => mapInfo || (mapFailure ? { failure: mapFailure } : null);
+const whenMap = () => mapState() ? Promise.resolve(mapState()) : new Promise(resolve => mapWaiters.push(resolve));
+const settleMap = () => { for (const resolve of mapWaiters.splice(0)) resolve(mapState()); };
 function toBackup(reason) {
   if (ready) return;
-  resolveMap({ failure: reason });
+  mapFailure = reason;
+  settleMap();
   if (settingsMode) {
     mapStart.hidden = true;
     status.textContent = reason;
@@ -60,7 +65,7 @@ let previewRequest = 0;
 
 async function previewMap(place) {
   const request = ++previewRequest;
-  const { viewer, Cesium } = await mapReady;
+  const { viewer, Cesium } = await whenMap();
   if (!viewer || request !== previewRequest) return;
   const view = regionView(Cesium, placeView(place));
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) viewer.camera.setView(view);
@@ -71,19 +76,20 @@ async function launch(place) {
   previewRequest++;
   const view = placeView(place);
   const eventRegion = place.region || { longitude: place.longitude, latitude: place.latitude };
-  const mapInfo = await mapReady;
-  if (mapInfo.failure) {
-    if (pageOptions.has('nofallback')) throw new Error(mapInfo.failure);
+  const map = await whenMap();
+  if (map.failure) {
+    if (pageOptions.has('nofallback')) throw new Error(map.failure);
+    console.warn('브이월드 실패 → 예비 지도:', map.failure);
     const query = new URLSearchParams({ fallback: '1', view: view.join(','), events: place.region || 'nearby' });
     location.replace('./backup.html?' + query);
     return false;
   }
-  const { viewer, Cesium } = mapInfo;
+  const { viewer, Cesium } = map;
   region.value = place.region || '';
   const cameraView = regionView(Cesium, view);
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) viewer.camera.setView(cameraView);
   else await new Promise(resolve => viewer.camera.flyTo({ ...cameraView, duration: 1.6, complete: resolve, cancel: resolve }));
-  openWorkspace(mapInfo, eventRegion);
+  openWorkspace(map, eventRegion);
   return true;
 }
 
@@ -127,8 +133,8 @@ function start() {
     ready = true;
     status.hidden = true;
     region.addEventListener('change', () => viewer.camera.flyTo(regionView(Cesium, regions[region.value])));
-    const mapInfo = { map, viewer, Cesium };
-    resolveMap(mapInfo);
+    mapInfo = { map, viewer, Cesium };
+    settleMap();
     if (settingsMode) openWorkspace(mapInfo);
   };
   map.start();
