@@ -1,0 +1,6 @@
+rock_color.jpg, rock_normal.jpg: "Rock 058" from ambientCG (https://ambientcg.com/a/Rock058), CC0 1.0 Universal.
+grass_color.jpg, grass_normal.jpg: "Grass 004" from ambientCG (https://ambientcg.com/a/Grass004), CC0 1.0 Universal.
+rock_sandstone_*.jpg: "Cliff Side" (https://polyhaven.com/a/cliff_side), Poly Haven, CC0 1.0.
+rock_basalt_*.jpg: "Dark Rock 02" (https://polyhaven.com/a/dark_rock_02), Poly Haven, CC0 1.0.
+rock_limestone_*.jpg: "Marble Cliff 03" (https://polyhaven.com/a/marble_cliff_03), Poly Haven, CC0 1.0.
+rock_brown_*.jpg: "Rock Face 03" (https://polyhaven.com/a/rock_face_03), Poly Haven, CC0 1.0.
