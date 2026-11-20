@@ -284,6 +284,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
     const consent = el.querySelector('#ra-consent');
     if (consent) consent.onchange = e => { st.allowAssumed = e.target.checked; renderResult(); };
     el.querySelectorAll('[data-phase]').forEach(b => b.onclick = () => showScenario(b.dataset.phase));
+    const depth = el.querySelector('#ra-depth'); if (depth) depth.onchange = e => panel?.setDepthMap?.(e.target.checked);
     const off = el.querySelector('#ra-off'); if (off) off.onclick = () => { panel?.stop(); st.shown = null; renderResult(); };
   }
   function itemTemplate(v, eff) {
@@ -319,6 +320,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
       ${sv.assumptions.length ? `<ul class="ra-src">${sv.assumptions.map(a => `<li>${esc(a)}</li>`).join('')}</ul>` : ''}
       ${sv.needsConsent ? `<p class="note ra-err">${esc(sv.reason)}</p>
         <label class="check"><input type="checkbox" id="ra-consent" ${st.allowAssumed ? 'checked' : ''}> 가정 시나리오로 비교해 보기 (실제 시설 성능이 아닌 시연용 값)</label>` : ''}
+      <label class="check"><input type="checkbox" id="ra-depth" ${panel?.depthMap ? 'checked' : ''}> 물 깊이 색으로 보기 (형광, 깊을수록 진하게)</label>
       <div class="ra-row"><button type="button" data-phase="before" aria-pressed="${st.shown === 'before'}" ${sv.available && same ? '' : 'disabled'}>공사 전 보기</button>
         <button type="button" data-phase="after" aria-pressed="${st.shown === 'after'}" ${sv.available && same ? '' : 'disabled'}>공사 후 보기</button>
         <button type="button" id="ra-off" ${st.shown ? '' : 'disabled'}>효과 끄기</button></div>
@@ -364,6 +366,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
   }
 
   addEventListener('korea-site-selected', e => setTarget(e.detail));
+  addEventListener('map-depthmap', e => { const c = box.querySelector('#ra-depth'); if (c) c.checked = e.detail; });
   addEventListener('map-place-selected', e => setTarget(e.detail, e.detail.title));
   renderTarget();
   return {

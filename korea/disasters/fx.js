@@ -14,7 +14,7 @@ import { getElevation } from '../dem.js';
 import { createBuildingFX } from './buildings.js';
 import { createWaterLayer } from './water.js';
 import { createCloudLayer } from './clouds.js';
-import { floodFill, floodDistance } from './flood-grid.js';
+import { floodFill, floodDistance, depressionDepth, depthBin, DEPTH_BINS } from './flood-grid.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v)), lerp = (a, b, t) => a + (b - a) * t, sm = x => x * x * (3 - 2 * x);
 const smoothstep01 = (a, b, x) => sm(clamp((x - a) / (b - a), 0, 1));
@@ -257,7 +257,7 @@ function createShared(viewer, Cesium) {
   };
   for (const s of Object.values(stages)) { s.enabled = false; scene.postProcessStages.add(s); }
   // 시정: 실제 값(비 90 mm/h면 약 1.5 km)은 화면이 거의 안 보여서 기본은 10배 (최소 18 km). '실제 시정' 켜면 실제 값
-  const opt = { realVis: false };
+  const opt = { realVis: false, depthMap: false }; // depthMap: 물 깊이 형광 히트맵 (패널 체크)
   const visEff = () => { const v = opt.realVis ? cur.vis : clamp(cur.vis * 10, 18000, 40000); return lerp(40000, v, wx()); };
   const shake = new Cesium.Cartesian3(); // 화면 흔들림 (x, y 화면 비율, z 회전 rad)
   // 카메라의 지면 위 높이: 비 · 눈 층(1.2 km) 위로 올라가면 화면 빗줄기를 줄임
@@ -317,6 +317,7 @@ function createShared(viewer, Cesium) {
     if (!step) return;
     groundUrls[kind + step] ??= groundTileDataUrl(step / 4, kind);
     o.layer = layers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({ url: groundUrls[kind + step], maximumLevel: 21, tileWidth: 256, tileHeight: 256 }));
+    for (const l of effectLayers) layers.raiseToTop(l); // 깊이 히트맵은 눈 · 웅덩이 무늬 위
   }
   function setGround(c, w) {
     c = c > .02 ? Math.min(1, c) : 0; w = w > .02 ? Math.min(1, w) : 0;
@@ -325,7 +326,7 @@ function createShared(viewer, Cesium) {
     groundC = c; groundW = w;
     const layers = viewer.imageryLayers, ours = new Set([overlay.snow.layer, overlay.puddle.layer]);
     for (let i = 0; i < layers.length; i++) {
-      const l = layers.get(i); if (ours.has(l)) continue;
+      const l = layers.get(i); if (ours.has(l) || effectLayers.has(l)) continue;
       if (!baseLook.has(l)) baseLook.set(l, { brightness: l.brightness, saturation: l.saturation, contrast: l.contrast, gamma: l.gamma });
       const o = baseLook.get(l), wet = w * (1 - c); // 눈이 덮으면 젖은 티는 안 남
       l.brightness = o.brightness * (1 + .7 * c) * (1 - .22 * wet); l.saturation = o.saturation * (1 - .75 * c) * (1 + .2 * wet);
@@ -447,7 +448,8 @@ function createShared(viewer, Cesium) {
         frequency: 5000, animationSpeed: .015, amplitude: 4, specularIntensity: .7 }) }),
     }));
     const normal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(Cesium.Cartesian3.fromDegrees(longitude, latitude), new Cesium.Cartesian3()), off = new Cesium.Cartesian3();
-    out.setHeight = h => { prim.show = Number.isFinite(h); if (prim.show) prim.modelMatrix = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(normal, h, off)); };
+    let lastH = null;
+    out.setHeight = h => { lastH = h; prim.show = Number.isFinite(h) && !heatOn; if (Number.isFinite(h)) prim.modelMatrix = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(normal, h, off)); };
     out.setColor = c => { prim.appearance.material.uniforms.baseWaterColor = c; };
     out.destroy = () => scene.primitives.remove(prim);
     // 물이 들어온 곳에서 m 안쪽 띠만 보임. 프리미티브가 한 번 그려지기 전엔 속성을 못 바꿔서 다음 호출(다음 프레임)에 다시
@@ -459,8 +461,81 @@ function createShared(viewer, Cesium) {
         try { prim.getGeometryInstanceAttributes('band' + b).show = Cesium.ShowGeometryInstanceAttribute.toValue(on); shown.set(b, on); } catch { return; }
       }
     };
+    // 물 깊이 색 (형광 히트맵, 켜고 끌 수 있음): 잠긴 칸마다 깊이(수위 − 지형)를 부드럽게 이어 지형에 덮음(depthLayer).
+    // 켜 있는 동안 물판은 숨김 (불투명한 물판이 지형 위 색을 가려서)
+    let heat = null, heatOn = false;
+    out.setDepthMap = level => {
+      heat?.destroy(); heat = null; heatOn = Number.isFinite(level);
+      prim.show = !heatOn && lastH !== null && Number.isFinite(lastH);
+      if (!heatOn) return;
+      const D = new Float32Array(N * N).fill(NaN);
+      for (let k = 0; k < N * N; k++) if (fill[k] && !sea[k] && Number.isFinite(H[k])) D[k] = level - H[k];
+      heat = depthLayer({ enu, half, N, depth: D });
+    };
+    const removeWater = out.destroy;
+    out.destroy = () => { out.setDepthMap(null); removeWater(); };
     out.ground = H[(N >> 1) * N + (N >> 1)];
     return out;
+  }
+
+  /* 빗물이 고이는 곳 (배수 능력 안의 비, 형광 히트맵 켰을 때): 발생 지점 둘레 2·half m를 N×N 칸으로 나눠 지형에서 물이 갇히는
+     오목한 곳의 깊이를 구하고(flood-grid.js depressionDepth), 비 양에 맞춘 cap(m)까지만 고인다고 봄. 지형에 덧칠(GroundPrimitive)이라
+     기복을 따라 붙음. 기사 수치가 아니라 지형 계산 + 비 양 가정이라 '고일 만한 곳' 표시 */
+  async function pondingMap({ longitude, latitude, half = 2500, N = 96, cap }) {
+    const enu = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(longitude, latitude));
+    const at = (x, y) => Cesium.Cartographic.fromCartesian(Cesium.Matrix4.multiplyByPoint(enu, new Cesium.Cartesian3(x, y, 0), new Cesium.Cartesian3()));
+    const cell = 2 * half / N, cartos = [];
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) cartos.push(at((i + .5) * cell - half, (j + .5) * cell - half));
+    const H = await sampleHeights(cartos), dep = depressionDepth(N, H), seaH = seaN ?? 0, D = new Float32Array(N * N).fill(NaN);
+    let cells = 0;
+    for (let k = 0; k < N * N; k++) if (H[k] > seaH + .3 && depthBin(Math.min(dep[k], cap)) >= 0) { D[k] = Math.min(dep[k], cap); cells++; } // 바다 · 높이 모르는 칸 제외
+    const layer = cells ? depthLayer({ enu, half, N, depth: D }) : null;
+    return { cells, destroy() { layer?.destroy(); } };
+  }
+
+  /* 깊이 격자 → 형광 히트맵 영상 층 (등고선처럼 구간별 색, 경계는 부드러운 곡선).
+     칸 깊이를 scale배로 쌍선형 보간해 픽셀마다 구간 색을 칠하고, 물이 있는 칸(마스크)도 보간해 0.5에서 잘라 경계를 둥글게.
+     지형 위 영상이라 기복을 따라 붙고 보는 각도와 상관없음. 동 · 북 격자를 경위도 사각형에 펴서 씀 (수 km라 회전 차이 무시) */
+  const effectLayers = new Set();
+  function depthLayer({ enu, half, N, depth, scale = Math.max(4, Math.round(768 / N)) }) { // 그림 약 768 px 한 변
+    const W = N * scale, canvas = document.createElement('canvas'); canvas.width = canvas.height = W;
+    const g = canvas.getContext('2d'), img = g.createImageData(W, W), px = img.data;
+    const colors = DEPTH_BINS.map(([, css], b) => { const c = Cesium.Color.fromCssColorString(css); return [c.red * 255, c.green * 255, c.blue * 255, (.55 + b * .05) * 255]; });
+    // 1) 칸 → 픽셀: 물 있음(마스크)과 깊이×마스크를 쌍선형 보간  2) 상자 흐림 두 번(가우스에 가까움)으로 계단 · 마름모 모서리를 둥글게
+    //    3) 마스크 0.5에서 잘라 경계, 깊이 = (깊이×마스크) / 마스크 로 구간 색
+    const M = new Float32Array(W * W), DM = new Float32Array(W * W);
+    for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
+      const gx = (x + .5) / scale - .5, gy = (W - 1 - y + .5) / scale - .5; // 그림 위쪽 = 북쪽
+      const i = Math.floor(gx), j = Math.floor(gy), tx = gx - i, ty = gy - j;
+      let m = 0, dm = 0;
+      for (let c = 0; c < 4; c++) {
+        const a = Math.max(0, Math.min(N - 1, i + (c & 1))), b = Math.max(0, Math.min(N - 1, j + (c >> 1)));
+        const w = (c & 1 ? tx : 1 - tx) * (c >> 1 ? ty : 1 - ty), v = depth[b * N + a];
+        if (Number.isFinite(v)) { m += w; dm += w * v; }
+      }
+      M[y * W + x] = m; DM[y * W + x] = dm;
+    }
+    const r = Math.max(2, Math.round(scale * .75)), tmp = new Float32Array(W * W);
+    const blur = A => {
+      for (let pass = 0; pass < 2; pass++) {
+        for (let y = 0; y < W; y++) { let acc = 0; const row = y * W; for (let x = -r; x < W; x++) { if (x + r < W) acc += A[row + x + r]; if (x - r - 1 >= 0) acc -= A[row + x - r - 1]; if (x >= 0) tmp[row + x] = acc / (2 * r + 1); } }
+        for (let x = 0; x < W; x++) { let acc = 0; for (let y = -r; y < W; y++) { if (y + r < W) acc += tmp[(y + r) * W + x]; if (y - r - 1 >= 0) acc -= tmp[(y - r - 1) * W + x]; if (y >= 0) A[y * W + x] = acc / (2 * r + 1); } }
+      }
+    };
+    blur(M); blur(DM);
+    for (let q = 0; q < W * W; q++) {
+      if (M[q] < .5) continue;                            // 물 있는 곳 경계 (부드러운 곡선)
+      const bin = depthBin(DM[q] / M[q]); if (bin < 0) continue;
+      const c = colors[bin], o = q * 4;
+      px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = c[3];
+    }
+    g.putImageData(img, 0, 0);
+    const at = (x, y) => Cesium.Cartographic.fromCartesian(Cesium.Matrix4.multiplyByPoint(enu, new Cesium.Cartesian3(x, y, 0), new Cesium.Cartesian3()));
+    const sw = at(-half, -half), ne = at(half, half);
+    const layer = viewer.imageryLayers.addImageryProvider(new Cesium.SingleTileImageryProvider({
+      url: canvas.toDataURL('image/png'), rectangle: new Cesium.Rectangle(sw.longitude, sw.latitude, ne.longitude, ne.latitude) }));
+    effectLayers.add(layer);
+    return { layer, destroy() { effectLayers.delete(layer); viewer.imageryLayers.remove(layer, true); } };
   }
 
   /* 땅 위 선: 브이월드 Cesium 빌드에는 땅에 붙는 선(clampToGround)용 작업 파일(createGroundPolylineGeometry)이 없어
@@ -511,7 +586,7 @@ function createShared(viewer, Cesium) {
     return out;
   };
 
-  return { C, opt, shake, groundLine, floodSurface, look, cur, setSky, get sky() { return sky.id; }, W, get camH() { return camH; }, setLook, seaLevelAt, get seaLevel() { return seaN; }, water, setOcean, set seaRise(v) { seaRise = v; }, tickers, time, simTime, setPaused, get paused() { return pausedAt != null; }, ringPositions };
+  return { C, opt, shake, groundLine, floodSurface, pondingMap, look, cur, setSky, get sky() { return sky.id; }, W, get camH() { return camH; }, setLook, seaLevelAt, get seaLevel() { return seaN; }, water, setOcean, set seaRise(v) { seaRise = v; }, tickers, time, simTime, setPaused, get paused() { return pausedAt != null; }, ringPositions };
 }
 
 /* ───── 재난별 효과 ───── */
@@ -539,7 +614,7 @@ function createEffect(type, ctx, S) {
     tsunami: { radius: 30000, color: new Cesium.Color(.27, .27, .2, .93), base: 'sea' },
     sealevel: { radius: 50000, color: new Cesium.Color(.06, .25, .33, .9), base: 'sea' },
   }[type];
-  let water = null, waterKey = '', waterReq = 0, waterTimer = 0;
+  let water = null, waterKey = '', waterReq = 0, waterTimer = 0, waterGen = 0; // waterGen: 물판을 새로 만들 때마다 (깊이 색도 다시)
   // 기준 높이: 근처 바다면 해수면, 이 지점이면 선택 지점 지형.
   // 해일은 어느 기준이든 바다에서 밀려 들어옴: 지점 기준이면 해안 파고를 키워 가장 높을 때 선택 지점이 파고 × 처오름만큼 잠기게
   const baseH = () => p.waterBase === 'point' && type !== 'tsunami' ? groundHeight : sea;
@@ -551,7 +626,7 @@ function createEffect(type, ctx, S) {
     if (type === 'flood' && p.polygon) w = S.water({ longitude, latitude, ...waterSpec, polygon: p.polygon }); // 직접 그린 영역
     else w = await S.floodSurface({ longitude, latitude, half: type === 'flood' ? 4000 : 9000, base: type === 'tsunami' ? 'sea' : p.waterBase, maxLevel: baseH() + waterAmount() + .01, color: waterSpec.color, flow: type === 'tsunami' });
     if (req !== waterReq || !alive) { w.destroy(); return; }
-    if (water) water.destroy(); water = w;
+    if (water) water.destroy(); water = w; waterGen++;
     if (type === 'tsunami') water.setReach(tsReach);
     if (type !== 'tsunami') water.setHeight(baseH() + waterAmount());
   }
@@ -565,6 +640,25 @@ function createEffect(type, ctx, S) {
     if (key === waterKey) return; waterKey = key;
     clearTimeout(waterTimer); waterTimer = setTimeout(buildWater, 350); // 슬라이더를 끄는 동안은 기다렸다가 한 번
   }
+
+  /* 물 깊이 형광 히트맵 (S.opt.depthMap, 패널에서 켜고 끔): 잠기면 물판 위에 깊이 구간 색, 배수 능력 안의 비면 고일 만한 곳.
+     매 프레임 조건만 비교하고 바뀔 때만 다시 그림. 해일은 가장 높을 때 수위 기준 */
+  let depthKey = '', ponds = null, pondReq = 0;
+  function updateDepthMap() {
+    const on = !!S.opt.depthMap && !!waterSpec && !(type === 'flood' && p.polygon);
+    const rainy = type === 'flood' || type === 'typhoon';
+    const cap = rainy ? +(.03 + .12 * (S.look.wet || 0)).toFixed(2) : 0; // 고이는 깊이 한도: 젖음 정도에 따라 3~15 cm
+    const level = baseH() + waterAmount();
+    const key = !on ? '' : dry() ? (rainy ? `pond|${cap}` : 'none') : `lv|${level.toFixed(2)}|${waterGen}`;
+    if (key === depthKey) return;
+    depthKey = key;
+    water?.setDepthMap?.(null); ponds?.destroy(); ponds = null; pondReq++;
+    if (!key || key === 'none') return;
+    if (key.startsWith('lv')) { water?.setDepthMap?.(level); return; }
+    const req = pondReq;
+    S.pondingMap({ longitude, latitude, cap }).then(m => { if (req !== pondReq || !alive) m.destroy(); else ponds = m; }).catch(e => console.warn('고이는 곳', e));
+  }
+  tick.add(() => { if (waterSpec) updateDepthMap(); });
 
   /* 건물 영향 (지진 · 물 · 산불): 발생 지점 둘레 지면 높이를 잰 뒤 켬 */
   const B = S.B, usesB = !!B && ['quake', 'tsunami', 'sealevel', 'flood', 'typhoon', 'wildfire', 'snow'].includes(type);
@@ -804,7 +898,7 @@ function createEffect(type, ctx, S) {
       for (const f of tick) S.tickers.delete(f);
       S.shake.x = S.shake.y = S.shake.z = 0;
       for (const x of parts) x.destroy();
-      clearTimeout(waterTimer); if (water) water.destroy();
+      clearTimeout(waterTimer); if (water) water.destroy(); pondReq++; ponds?.destroy();
       for (const e of entities) viewer.entities.remove(e);
       for (const l of quakeLines) l.destroy();
       clearFire();

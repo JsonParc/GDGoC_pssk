@@ -153,6 +153,7 @@ SDK가 준비되면 `korea-vworld-ready` 이벤트가 발생합니다. `window.k
 | 산불 | 피해 면적(또는 **영역 그리기**로 직접 그린 다각형)을 발화점에서 바깥으로 태움. 불꽃 수천 개 · 화선 · 불탄 자리 · 연기 |
 | 폭염 · 대설 | 누런 연무 · 아지랑이 / 눈 내림, 위를 보는 면(지형 · 건물 지붕)에 눈이 쌓임 |
 
+- **물 깊이 색으로 보기 (형광)**: 패널(물 기준 아래)이나 지역 분석의 전 · 후 비교에서 켜고 끕니다. 잠기면 칸마다 깊이(수위 − 지형)를, 배수 능력 안의 비면 지형에서 물이 갇히는 오목한 곳(가장자리부터 채우는 priority-flood, `flood-grid.js`)을 비 양에 맞춘 깊이(3~15 cm)까지 2 cm · 5 cm · 10 cm · 20 cm · 50 cm · 1 m · 2 m 구간 색으로 지형에 덮습니다(보간 + 흐림으로 곡선 경계). 켜 있는 동안 흙탕물 판은 숨깁니다. 해일은 가장 높을 때 기준.
 - 재난 정의 · 입력값 · 간이 공식은 템플릿 뷰어와 같은 `js/disaster.js`를 씁니다. 효과는 `korea/disasters/fx.js`, 패널은 `korea/disasters/panel.js`입니다.
 - API: `koreaDisaster.set('flood', { rain: 90, hours: 6, drain: 40, polygon: [[경도, 위도], …] }, { longitude, latitude }, 부가데이터)` · `koreaDisaster.stop()` · `koreaDisaster.get()`
 - 팀원 컨트롤러(`koreaVWorld.disasters`)는 `start({ type, longitude, latitude, intensity, params })`와 `setParams(type, params)`를 받도록 넓혔습니다. 기존 호출은 그대로 동작합니다.

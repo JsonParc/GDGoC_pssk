@@ -79,3 +79,25 @@ test('unreached cells stay at Infinity', () => {
   const dist = floodDistance(N, floodFill(N, H, seeds, 20), seeds);
   assert.equal(dist[at(3, 3)], Infinity);
 });
+
+test('rain pools in a bowl up to its rim and drains off a slope', async () => {
+  const { depressionDepth, depthBin } = await import('../korea/disasters/flood-grid.js');
+  // 5×5: 가장자리 10 m, 안쪽 고리 8 m, 가운데 7 m → 가운데는 테두리(8 m 둘레를 넘는 낮은 출구가 없음)까지 참
+  const N = 5, H = new Float64Array(N * N).fill(10);
+  for (let j = 1; j < 4; j++) for (let i = 1; i < 4; i++) H[j * N + i] = 8;
+  H[2 * N + 2] = 7;
+  const d = depressionDepth(N, H);
+  assert.equal(d[2 * N + 2], 3); // 가장자리 10 m까지
+  assert.equal(d[1 * N + 1], 2);
+  // 한쪽 가장자리가 6 m로 트이면 그쪽으로 빠져 7 m 가운데만 고임 (8 m 고리 높이까지 1 m)
+  H[2 * N + 0] = 6; H[2 * N + 1] = 8;
+  const d2 = depressionDepth(N, H);
+  assert.equal(d2[2 * N + 2], 1);
+  assert.equal(d2[1 * N + 1], 0);
+  // 비탈은 안 고임, 높이 모르는 칸 둘레로는 빠짐
+  const S = Float64Array.from({ length: 16 }, (_, k) => k % 4);
+  assert.ok(depressionDepth(4, S).every(v => v === 0));
+  assert.equal(depthBin(.01), -1);
+  assert.equal(depthBin(.7), 4);
+  assert.equal(depthBin(5), 6);
+});

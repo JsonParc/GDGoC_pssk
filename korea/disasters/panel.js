@@ -6,6 +6,7 @@
 import { registerDisasterEffects } from './fx.js';
 import { attachCardList } from './cards.js';
 import { makeDraggable, makeWindow } from './draggable.js';
+import { DEPTH_BINS } from './flood-grid.js';
 
 const CSS = `
 #dx-panel.closed,#dx-open.closed{display:none!important}
@@ -47,6 +48,8 @@ const CSS = `
 #dx-panel select{width:100%;background:#182624;color:#fff;border:1px solid #425552;border-radius:6px;padding:5px;font:inherit;margin:0}
 #dx-panel label.check{display:flex;gap:6px;align-items:center;margin-top:8px;color:#dae6df}
 #dx-panel label.check input{width:auto;margin:0}
+#dx-panel .depth-legend{display:flex;flex-wrap:wrap;gap:4px 9px;margin-top:7px;font-size:11px;color:#dae6df}
+#dx-panel .depth-legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:4px;vertical-align:-1px}
 #dx-panel .tag{font-size:10px;color:#ffb547;border:1px solid #ffb54766;border-radius:4px;padding:0 4px;margin-left:4px;font-weight:500}
 #dx-open{position:absolute;z-index:5;top:var(--map-panel-top,60px);left:12px;background:#202c2c;color:#fff;border:1px solid #425552;border-radius:9px;padding:7px 11px;cursor:pointer;font:inherit;font-size:13px;font-weight:600;width:auto;min-height:36px}
 #dx-panel{--accent:linear-gradient(90deg,#b4d29a,#99d2ad 55%,#7fc3b6);color-scheme:dark;width:min(var(--map-side-panel-width,337px),calc(100vw - 24px));max-height:calc(100dvh - 108px);border-radius:15px}
@@ -123,6 +126,9 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
         <div class="group" id="dx-base-row" hidden><h3>물 기준</h3><select id="dx-base" aria-label="물 기준"><option value="sea">근처 해수면 기준</option><option value="point">선택 지점 지면 기준</option></select>
           <p class="note" id="dx-base-note" hidden></p>
         </div>
+        <div class="group" id="dx-depth-row" hidden><label class="check"><input type="checkbox" id="dx-depthmap"> 물 깊이 색으로 보기 (형광)</label>
+          <div class="depth-legend" id="dx-depth-legend" hidden></div>
+          <p class="note" id="dx-depth-note" hidden></p></div>
         <div class="group"><h3>입력값</h3><div id="dx-params"></div></div>
         <div class="group"><h3>추정치 <span class="tag">간이 공식</span></h3><dl id="dx-out"></dl></div>
         <details><summary>파라미터 JSON</summary><textarea id="dx-json" rows="6" spellcheck="false"></textarea>
@@ -327,6 +333,10 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
     const WATERY = ['typhoon', 'tsunami', 'sealevel', 'flood']; // 해일은 기준과 상관없이 바다에서 밀려 들어옴 (기준은 수위만 정함)
     $('dx-base-row').hidden = !WATERY.includes(type) || (type === 'flood' && !!params.polygon);
     $('dx-base').value = params.waterBase || (type === 'flood' ? 'point' : 'sea');
+    $('dx-depth-row').hidden = !WATERY.includes(type) && type !== 'tsunami';
+    $('dx-depth-legend').hidden = $('dx-depth-note').hidden = !$('dx-depthmap').checked;
+    $('dx-depth-note').textContent = type === 'tsunami' ? '해일이 가장 높을 때 잠기는 깊이입니다.'
+      : type === 'flood' || type === 'typhoon' ? '배수 능력 안의 비면 지형에서 물이 갇히는 오목한 곳을 비 양만큼 얕게 표시합니다 (지형 계산 + 가정).' : '잠기는 깊이입니다.';
     $('dx-base-note').hidden = type !== 'tsunami';
     $('dx-base-note').textContent = type !== 'tsunami' ? ''
       : $('dx-base').value === 'point' ? '바다에서 밀려 들어와, 가장 높을 때 선택 지점이 파고 × 처오름만큼 잠깁니다.'
@@ -338,6 +348,10 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
   }
   $('dx-apply').onclick = () => start(); $('dx-stop').onclick = stop;
   $('dx-pause').onclick = () => { S.setPaused?.(!S.paused); render(); };
+  // 물 깊이 형광 히트맵: 켜고 끌 수 있음 (fx.js가 매 프레임 확인해 바뀌면 다시 그림)
+  $('dx-depth-legend').innerHTML = DEPTH_BINS.map(([, color, label]) => `<span><i style="background:${color}"></i>${label}</span>`).join('');
+  function setDepthMap(on) { S.opt.depthMap = !!on; $('dx-depthmap').checked = !!on; render(); dispatchEvent(new CustomEvent('map-depthmap', { detail: !!on })); }
+  $('dx-depthmap').onchange = e => setDepthMap(e.target.checked);
   $('dx-base').onchange = e => { params.waterBase = e.target.value; if (running === type) disasters.setParams(type, { ...params }); render(); };
   $('dx-json-apply').onclick = () => {
     try { const j = JSON.parse($('dx-json').value); if (!TYPES[j.type] || j.type === 'none') throw new Error('type 오류'); api.set(j.type, j.params, j.site, j.data); }
@@ -384,7 +398,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
       showPreview(params.polygon || [], true);
       render(true); return start(extra?.cardId != null ? { id: String(extra.cardId), title: extra.title } : null);
     },
-    stop, setOpen, get: () => ({ type: running, params: { ...params }, site, data, activeCard, drawing }), effects: S,
+    stop, setOpen, setDepthMap, get depthMap() { return !!S.opt.depthMap; }, get: () => ({ type: running, params: { ...params }, site, data, activeCard, drawing }), effects: S,
     // 백엔드 구름: [{ id, longitude, latitude, base | baseAboveGround, width, height, depth?, speed, direction, precip?, rate?, darkness? }]
     clouds: { load: (list, origin) => S.C && S.C.load(list, origin), update: list => S.C && S.C.update(list), clear: () => S.C && S.C.clear() },
     sky: id => S.setSky(id || null), sea: () => {},
