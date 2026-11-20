@@ -139,7 +139,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
         <p class="note">물 데이터 © OpenMapTiles · © OpenStreetMap contributors</p>
       </div>
     </div>
-    <div class="btns actions" id="dx-actions"><button type="button" class="primary" id="dx-apply">적용</button><button type="button" id="dx-pause" hidden aria-pressed="false" title="쌓임 · 번짐 · 파도 진행만 멈춤 (눈 · 비는 계속 내림)">⏸ 멈춤</button><button type="button" id="dx-stop">끄기</button></div>`;
+    <div class="btns actions" id="dx-actions"><button type="button" class="primary" id="dx-apply">적용</button><button type="button" id="dx-pause" hidden aria-pressed="false" title="쌓임 · 번짐 · 수위 같은 단계 진행만 멈춤 (내리는 눈 · 비 · 불꽃 · 물결 애니메이션은 계속)">⏸ 단계 진행 중지</button><button type="button" id="dx-stop">끄기</button></div>`;
   const opener = document.createElement('button'); opener.id = 'dx-open'; opener.type = 'button';
   opener.innerHTML = '재난 · 기후변화 <span aria-hidden="true">›</span>'; opener.classList.add('closed');
   const tapHint = document.createElement('div'); tapHint.id = 'dx-tap-hint'; tapHint.hidden = true;
@@ -322,7 +322,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters, eventRegion }) 
     $('dx-apply').textContent = running === type ? '다시 적용' : '적용';
     // 진행 멈춤: 시간에 따라 진행하는 재난만 (대설 쌓임 · 산불 번짐 · 해일 파도 · 지진 흔들림)
     $('dx-pause').hidden = !(running === type && TIMELAPSE.includes(type));
-    $('dx-pause').textContent = S.paused ? '▶ 이어서' : '⏸ 멈춤';
+    $('dx-pause').textContent = S.paused ? '▶ 단계 진행 재개' : '⏸ 단계 진행 중지';
     $('dx-pause').setAttribute('aria-pressed', String(S.paused));
     const WATERY = ['typhoon', 'tsunami', 'sealevel', 'flood']; // 해일은 기준과 상관없이 바다에서 밀려 들어옴 (기준은 수위만 정함)
     $('dx-base-row').hidden = !WATERY.includes(type) || (type === 'flood' && !!params.polygon);
