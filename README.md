@@ -183,3 +183,11 @@ SDK가 준비되면 `korea-vworld-ready` 이벤트가 발생합니다. `window.k
   koreaDisaster.clouds.update(list);  // 같은 id는 새 위치로 부드럽게 이동 · 크기 변경, 새 id 추가, 빠진 id 삭제
   koreaDisaster.clouds.clear();
   ```
+
+### 재난 사건 목록 (백엔드 연동)
+
+지도 오른쪽 **재난 사건** 서랍에 백엔드(`JsonParc/GDGoC_TUK_pssk_backend`)가 뉴스에서 뽑은 사건을 카드로 보여 줍니다. 최근 · 저장됨 탭, 재난 종류 · 지역(대한민국 먼저 / 대한민국만 / 해외만) 필터가 있습니다. 카드를 누르면 요약 · 피해 규모 · 시뮬레이션 입력값과 값마다 출처(기사 / 기사로 계산 / 기상청 실황 / 기본값(가정)) · 원문 기사 · 행동요령이 나오고, **시뮬레이션 실행**을 누르면 그 지역으로 이동해 `map_effect`대로 재난 효과를 켭니다. 저장(☆)은 이 브라우저에만 남습니다.
+
+- 서버 주소: `korea/config.js`의 `DISASTER_API_URL`. 비워 두면 localhost에서 열 때만 `http://localhost:8001`을 씁니다.
+- 백엔드 `ALLOWED_ORIGINS`에 이 사이트 주소(예: `https://jsonparc.github.io`, Render 프론트 주소)를 넣어야 합니다.
+- 프론트 보정: 한파 카드는 눈이 내리지 않게(`rate 0`), 기사에서 온 해일 높이는 이미 해안 높이라 처오름 배율 1.

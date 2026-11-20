@@ -4,6 +4,7 @@
    재난 정의 · 간이 공식은 js/disaster.js(window.DisasterFX), 하늘 · 바다 값은 js/atmosphere.js(window.MapAtmosphere)
    API: window.koreaDisaster.set(type, params, { longitude, latitude }, data) · .stop() · .get() · .sky(id) · .sea(id) */
 import { registerDisasterEffects } from './fx.js';
+import { attachCardList } from './cards.js';
 
 const CSS = `
 #dx-panel.closed,#dx-open.closed{display:none!important}
@@ -249,5 +250,6 @@ export function attachDisasterPanel({ viewer, Cesium, disasters }) {
     sky: id => S.setSky(id || null), sea: () => {},
   };
   window.koreaDisaster = api;
+  try { api.cards = attachCardList({ viewer, Cesium }); } catch (e) { console.warn('재난 사건 목록', e); } // 오른쪽 재난 사건 목록 (백엔드 API)
   return api;
 }
