@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>재난 효과 시험 지도</title>
+  <!-- 브이월드 키 없이 재난 효과를 시험하는 페이지: 브이월드 SDK와 같은 CesiumJS 1.99 + AWS 공개 DEM + Sentinel-2 영상.
+       브이월드 3D 건물은 없음. 재난 패널 · 효과 코드는 vworld.html과 같음 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.99.0/Build/Cesium/Widgets/widgets.css">
+  <style>
+    body { margin: 0; font: 14px system-ui, sans-serif; }
+    #vmap { position: fixed; inset: 0; }
+    #note { position: absolute; z-index: 2; top: 12px; left: 12px; max-width: min(300px, calc(100vw - 360px)); padding: 6px 9px; border-radius: 7px; background: #142720e8; color: #fff; font-size: 12px; }
+    #note a { color: #9fe3d2; }
+    #disaster-controls { position: absolute; z-index: 2; bottom: 40px; left: 12px; max-width: calc(100vw - 44px); padding: 6px 8px; border-radius: 7px; background: #142720e8; color: #fff; }
+    #disaster-controls:not([hidden]) { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #disaster-controls button { background: transparent; color: #fff; border: 1px solid #647a70; border-radius: 6px; padding: 4px 6px; }
+    #disaster-controls button:disabled { opacity: .45; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/cesium@1.99.0/Build/Cesium/Cesium.js"></script>
+  <script src="../js/disaster.js"></script>
+</head>
+<body>
+  <main id="vmap" aria-label="재난 효과 시험 지도"></main>
+  <p id="note">키 없이 재난 효과를 시험하는 지도입니다 (브이월드와 같은 Cesium 1.99, 공개 DEM). 실제 3D 건물은 <a href="./vworld.html">브이월드 3D 지도</a>에서 보입니다.</p>
+  <section id="disaster-controls" aria-label="좌표와 3D 마커" hidden>
+    <output id="elevation" aria-live="polite">지점 선택</output>
+    <div class="controls"><button type="button" id="place-marker" disabled>3D 마커</button></div>
+  </section>
+  <script type="module" src="./cesium-test.js"></script>
+</body>
+</html>

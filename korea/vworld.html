@@ -41,8 +41,9 @@
 </head>
 <body>
   <main id="vmap" aria-label="브이월드 3D 지도"></main>
+  <script src="./config.js"></script>
   <script>
-    const key = localStorage.getItem('korea-vworld-key');
+    const key = localStorage.getItem('korea-vworld-key') || window.KOREA_VWORLD_KEY;
     if (key) {
       const sdk = new URL('https://map.vworld.kr/js/webglMapInit.js.do');
       sdk.search = new URLSearchParams({ version: '3.0', apiKey: key });
@@ -87,6 +88,7 @@
       <button type="button" id="place-marker" disabled>3D 마커</button>
     </div>
   </section>
+  <script src="../js/disaster.js"></script>
   <script type="module" src="./vworld.js"></script>
 </body>
 </html>

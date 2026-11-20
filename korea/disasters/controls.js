@@ -22,6 +22,7 @@ export function enableDisasterControls(viewer, Cesium) {
       terrainHeight: coordinate.height,
     };
     selected = site;
+    window.dispatchEvent(new CustomEvent('korea-site-selected', { detail: site })); // 재난 패널이 발생 지점으로 씀
     markerButton.disabled = false;
     const label = `${site.latitude.toFixed(5)}°, ${site.longitude.toFixed(5)}°`;
     elevation.textContent = `${label} · DEM 조회 중…`;

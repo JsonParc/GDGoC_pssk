@@ -84,6 +84,18 @@ const TYPES = {
     },
     env: p => ({ tsunami: { height: p.height, runup: p.runup, dir: p.dir, speed: p.speed }, gloom: .2, vis: 16000, tint: 0x6a7680, tintAmt: .4, sea: .9, mud: .6, wind: 8, dir: p.dir }),
   },
+  sealevel: {
+    name: '해수면 상승', icon: '🌡', desc: '기후변화로 바다가 오른 만큼 해안 저지대가 잠깁니다. 폭풍해일을 더하면 그 위로 더 올라옵니다. IPCC 6차 보고서(AR6) 2100년 전망과 비교해 보세요.',
+    params: [P('rise', '해수면 상승', 'm', 0, 5, .01, .77), P('surge', '폭풍해일 추가', 'm', 0, 5, .1, 0)],
+    derive(p) {
+      // IPCC AR6 WG1 표 9.9 · SPM: 1995–2014 대비 2100년 전 지구 평균 해수면 상승 중앙값(가능성 높은 범위)
+      const ar6 = [['SSP1-1.9', .38, '0.28–0.55'], ['SSP1-2.6', .44, '0.32–0.62'], ['SSP2-4.5', .56, '0.44–0.76'], ['SSP3-7.0', .68, '0.55–0.90'], ['SSP5-8.5', .77, '0.63–1.01']];
+      const near = ar6.reduce((a, b) => Math.abs(b[1] - p.rise) < Math.abs(a[1] - p.rise) ? b : a);
+      return [['바다 높이 (상승 + 해일)', `${fmt(p.rise + p.surge, 2)} m`], ['가장 가까운 AR6 2100년 전망', `${near[0]} ${fmt(near[1], 2)} m (${near[2]})`],
+        ['참고', p.rise > 1.01 ? '빙상 붕괴 등 가능성 낮은 고영향 시나리오 (2100년 최대 약 2 m, 2150년 최대 약 5 m)' : '가능성 높은 범위 안']];
+    },
+    env: p => ({ water: p.rise + p.surge, mud: p.surge > 0 ? .4 : 0, sea: p.surge > 0 ? .6 : .25, gloom: p.surge > 0 ? .25 : 0, vis: p.surge > 0 ? 12000 : 40000 }),
+  },
   wildfire: {
     name: '산불', icon: '🔥', desc: '발화점(기본: 화면 가운데가 가리키는 땅)에서 피해 면적까지 불이 번지고 연기가 바람을 따라 흐릅니다.',
     params: [P('area', '피해 면적', 'ha', 1, 30000, 1, 800), P('wind', '풍속', 'm/s', 0, 30, .5, 7), P('dir', '바람이 불어오는 방향', '°', 0, 359, 1, 270), P('humidity', '상대 습도', '%', 5, 100, 1, 25)],

@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>대한민국 3D 지형 지도</title>
+  <script src="./korea/config.js"></script>
   <script>
-    if (localStorage.getItem('korea-vworld-key') && new URLSearchParams(location.search).get('map') !== 'open') {
+    if ((localStorage.getItem('korea-vworld-key') || window.KOREA_VWORLD_KEY) && new URLSearchParams(location.search).get('map') !== 'open') {
       location.replace('./korea/vworld.html');
     }
   </script>

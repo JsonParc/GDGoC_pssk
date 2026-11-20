@@ -139,3 +139,29 @@ SDK가 준비되면 `korea-vworld-ready` 이벤트가 발생합니다. `window.k
 다른 팀원이 효과를 연동할 때는 `korea-vworld-ready` 이후 `window.koreaVWorld.disasters.register(type, createEffect)`에 모듈을 등록합니다. 생성 함수는 지도·좌표·강도를 전달받고, `setIntensity`와 `destroy` 메서드를 반환합니다.
 
 3D 마커는 [Khronos glTF Sample Assets의 Box](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Box)를 사용합니다. © 2017 Cesium, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). 원본 모델 파일은 변경하지 않았으며, 지도에서 표시 크기만 조정합니다.
+
+### 재난 · 기후변화 효과 (브이월드 3D)
+
+브이월드 지도 오른쪽 위 **재난 · 기후변화** 패널에서 재난을 고르고 지도를 클릭해 발생 지점을 정합니다. 입력값은 숫자 칸과 슬라이더로 조정하며, 효과가 켜진 채로 지도를 클릭하면 그 자리로 옮겨집니다.
+
+| 재난 | 지도 위 표현 (모두 실제 m) |
+| --- | --- |
+| 태풍 · 집중호우 | 화면 비, 어두운 하늘, 비 양에 따른 시정. 폭풍해일 · 침수 깊이만큼 물을 채워 DEM보다 낮은 땅만 잠김 |
+| 해수면 상승 (기후변화) | 해수면 + 상승분(+ 폭풍해일)까지 바다가 올라옴. IPCC AR6 2100년 전망과 비교 |
+| 지진해일 | 실제 주기 12분 파형(빠짐 → 차오름 → 잠김 → 빠짐)을 재생 배속만큼 빠르게, 처오름 높이까지 흙탕물 |
+| 지진 | 카메라 위치의 지반 가속도로 흔들림, 진도별 영향 반경 원 |
+| 산불 | 피해 면적(또는 **영역 그리기**로 직접 그린 다각형)을 발화점에서 바깥으로 태움. 불꽃 수천 개 · 화선 · 불탄 자리 · 연기 |
+| 폭염 · 대설 | 누런 연무 · 아지랑이 / 눈 내림, 위를 보는 면(지형 · 건물 지붕)에 눈이 쌓임 |
+
+- 재난 정의 · 입력값 · 간이 공식은 템플릿 뷰어와 같은 `js/disaster.js`를 씁니다. 효과는 `korea/disasters/fx.js`, 패널은 `korea/disasters/panel.js`입니다.
+- API: `koreaDisaster.set('flood', { rain: 90, hours: 6, drain: 40, polygon: [[경도, 위도], …] }, { longitude, latitude }, 부가데이터)` · `koreaDisaster.stop()` · `koreaDisaster.get()`
+- 팀원 컨트롤러(`koreaVWorld.disasters`)는 `start({ type, longitude, latitude, intensity, params })`와 `setParams(type, params)`를 받도록 넓혔습니다. 기존 호출은 그대로 동작합니다.
+- 해수면은 선택 지점 둘레 바다(공개 DEM이 음수인 곳)의 지도 높이로 정합니다.
+
+### 브이월드 키
+
+`korea/config.js`의 배포용 키가 기본으로 쓰입니다. 브이월드 키는 브라우저 코드에 드러나는 방식이며 포털에 등록한 서비스 URL에서만 동작합니다. 브라우저에서 직접 입력한 키(설정 화면)가 있으면 그쪽을 먼저 씁니다.
+
+### 키 없이 시험
+
+`korea/cesium-test.html`은 브이월드와 같은 CesiumJS 1.99에 공개 DEM · Sentinel-2 영상을 올린 시험 지도입니다. 3D 건물은 없고 재난 패널 · 효과는 같습니다.

@@ -2,12 +2,15 @@ import { getElevation } from './dem.js';
 import { enableLocationSearch } from './location-search.js';
 import { enableDisasterControls } from './disasters/controls.js';
 import { improveTileCoverage } from './tile-coverage.js';
+import { attachDisasterPanel } from './disasters/panel.js';
 
 const status = document.querySelector('#status');
 const region = document.querySelector('#region');
 const credentials = document.querySelector('#credentials');
 const forget = document.querySelector('#forget');
 const storageKey = 'korea-vworld-key';
+// 브라우저에 저장한 키가 없으면 config.js의 배포용 키
+const vworldKey = () => localStorage.getItem(storageKey) || window.KOREA_VWORLD_KEY || '';
 const regions = {
   seoul: [126.978, 37.564, 1050, -44],
   korea: [127.8, 35.8, 780000, -90],
@@ -63,14 +66,15 @@ function start() {
     });
 
     const disasters = enableDisasterControls(viewer, Cesium);
-    enableLocationSearch({ key: localStorage.getItem(storageKey), viewer, Cesium });
-    window.koreaVWorld = { map, viewer, getElevation, disasters };
+    enableLocationSearch({ key: vworldKey(), viewer, Cesium });
+    const disasterPanel = attachDisasterPanel({ viewer, Cesium, disasters }); // 재난 · 기후변화 패널 (오른쪽 위)
+    window.koreaVWorld = { map, viewer, getElevation, disasters, disasterPanel };
     window.dispatchEvent(new Event('korea-vworld-ready'));
   };
   map.start();
 }
 
-if (localStorage.getItem(storageKey)) {
+if (vworldKey()) {
   forget.hidden = false;
   status.textContent = '브이월드 지도를 불러오는 중…';
   try {

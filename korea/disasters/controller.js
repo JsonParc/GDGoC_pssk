@@ -27,19 +27,20 @@ export function createDisasterController(viewer, Cesium) {
       if (effects.has(type)) throw new Error(`이미 등록된 효과: ${type}`);
       effects.set(type, createEffect);
     },
-    async start({ type, longitude, latitude, intensity }) {
+    // params: 재난별 입력값 (js/disaster.js TYPES의 params). 없으면 intensity만 씀
+    async start({ type, longitude, latitude, intensity = 1, params = {} }) {
       const createEffect = effects.get(type);
       if (!createEffect) throw new RangeError(`지원하지 않는 재난 효과: ${type}`);
       validateCoordinates(longitude, latitude);
       validateIntensity(intensity);
       const cartographic = Cesium.Cartographic.fromDegrees(longitude, latitude);
       stop(type);
-      const request = { intensity };
+      const request = { intensity, params };
       pending.set(type, request);
       try {
         const groundHeight = viewer.scene.globe.getHeight(cartographic) ?? await getElevation(longitude, latitude);
         if (pending.get(type) !== request) return;
-        active.set(type, createEffect({ viewer, Cesium, longitude, latitude, groundHeight, intensity: request.intensity }));
+        active.set(type, createEffect({ viewer, Cesium, longitude, latitude, groundHeight, intensity: request.intensity, params: request.params }));
       } finally {
         if (pending.get(type) === request) pending.delete(type);
       }
@@ -50,6 +51,12 @@ export function createDisasterController(viewer, Cesium) {
       if (request) request.intensity = intensity;
       active.get(type)?.setIntensity(intensity);
     },
+    setParams(type, params) {
+      const request = pending.get(type);
+      if (request) request.params = params;
+      active.get(type)?.setParams?.(params);
+    },
+    types: () => [...effects.keys()],
     stop,
     isActive: type => active.has(type),
   };
