@@ -13,6 +13,7 @@
 import { getElevation } from '../dem.js';
 import { createBuildingFX } from './buildings.js';
 import { createWaterLayer } from './water.js';
+import { createCloudLayer } from './clouds.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v)), lerp = (a, b, t) => a + (b - a) * t, sm = x => x * x * (3 - 2 * x);
 const smoothstep01 = (a, b, x) => sm(clamp((x - a) / (b - a), 0, 1));
@@ -41,7 +42,7 @@ const ATMOS_FS = `uniform sampler2D colorTexture; uniform sampler2D depthTexture
     float fogK;
     // 비 · 눈 · 연기는 지면 위 u_layer(m) 안에만 있음: 시선이 그 층을 지나는 거리만 시정으로 셈 (위에서 내려다보면 덜 뿌옇게)
     float inLayer = clamp(u_layer/max(u_camH, 1.), 0., 1.);
-    if (depth < 1.) { float dist = length(eyeAt(uv)); fogK = 1. - exp(-2.3*dist*inLayer/max(u_vis, 1.)); } // 시정 거리에서 약 90%
+    if (depth < 1.) { float dist = length(eyeAt(uv)); fogK = (1. - exp(-2.3*dist*inLayer/max(u_vis, 1.)))*.85; } // 시정 거리에서 약 90%
     else fogK = (1. - smoothstep(1500., 30000., u_vis))*inLayer;                                                 // 하늘: 층 안에서 시정이 짧을 때만 덮음
     vec3 fogC = mix(vec3(.74, .77, .8), u_tint, u_tintAmt)*(1. - .55*u_gloom);
     vec3 c = mix(col.rgb*(1. - .5*u_gloom), fogC, fogK);
@@ -100,17 +101,18 @@ const COVER_FS = `uniform sampler2D colorTexture; uniform sampler2D depthTexture
 /* 하늘 템플릿 (템플릿 뷰어의 하늘 사진 15종): 하늘 픽셀(깊이 없음)만 반구-팔면체 사진으로 바꿈.
    사진 속 해 방위를 Cesium 실제 해 방위에 맞춰 돌림 (atmosphere.js와 같은 매핑) */
 const SKY_FS = `uniform sampler2D colorTexture; uniform sampler2D depthTexture; uniform sampler2D u_sky; varying vec2 v_textureCoordinates;
-  uniform mat3 u_toLocal; uniform vec2 u_texSun; uniform float u_tint; uniform float u_gain; uniform vec3 u_hor; uniform vec3 u_zen; uniform float u_on; uniform float u_dim;
+  uniform mat3 u_toLocal; uniform vec3 u_camR; uniform vec3 u_camU; uniform vec3 u_camD; uniform vec2 u_tan; uniform vec2 u_texSun; uniform float u_tint; uniform float u_gain; uniform vec3 u_hor; uniform vec3 u_zen; uniform float u_on; uniform float u_dim;
   uniform float u_cover; uniform float u_gloom; uniform vec2 u_wind; uniform float u_time;
   float hh(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y)*p3.z); }
   float nn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3. - 2.*f); return mix(mix(hh(i), hh(i + vec2(1, 0)), f.x), mix(hh(i + vec2(0, 1)), hh(i + vec2(1, 1)), f.x), f.y); }
   float fbm(vec2 p){ float v = 0., a = .5; for (int i = 0; i < 5; i++) { v += a*nn(p); p = mat2(.8, .6, -.6, .8)*p*2.03 + 17.1; a *= .5; } return v; }
   void main(){
     vec4 col = texture2D(colorTexture, v_textureCoordinates);
-    if ((u_on <= 0. && u_cover <= 0.) || czm_readDepth(depthTexture, v_textureCoordinates) < 1.) { gl_FragColor = col; return; }
-    // 시선 방향은 가까운 면(−1)에서: 먼 면은 Cesium에서 아주 멀어 정밀도가 깨져 화면이 지지직거림
-    vec4 e = czm_inverseProjection*vec4(v_textureCoordinates*2. - 1., -1., 1.);
-    vec3 l = u_toLocal*(czm_inverseView*vec4(normalize(e.xyz/e.w), 0.)).xyz, d = normalize(vec3(l.x, l.z, -l.y));
+    // 시선 방향: 카메라의 오른쪽 · 위 · 앞 벡터(동 · 북 · 위 좌표, JS에서 매 프레임 계산)와 화각으로 바로 만듦.
+    // 투영 행렬 역산은 Cesium의 아주 먼 먼 면 때문에 정밀도가 깨져 움직일 때 지지직거렸음
+    vec2 sc = (v_textureCoordinates*2. - 1.)*u_tan;
+    vec3 l = normalize(u_camD + u_camR*sc.x + u_camU*sc.y), d = normalize(vec3(l.x, l.z, -l.y));
+    if ((u_on <= 0. && u_cover <= 0.) || czm_readDepth(depthTexture, v_textureCoordinates) < (d.y > .01 ? .99999 : 1.)) { gl_FragColor = col; return; }
     vec3 sl = u_toLocal*czm_sunDirectionWC;
     float th = atan(u_texSun.y, u_texSun.x) - atan(-sl.y, sl.x);
     vec2 rot = vec2(cos(th), sin(th));
@@ -130,6 +132,42 @@ const SKY_FS = `uniform sampler2D colorTexture; uniform sampler2D depthTexture; 
     gl_FragColor = vec4(c, col.a);
   }`;
 
+
+/* 스카이스피어: 카메라를 감싼 큰 구(반지름 = 지평선 거리의 1.3배 이상)를 하늘 사진 + 날씨 구름 재질로 그림.
+   화면 후처리로 하늘을 덧칠하면 반투명한 3D 구름 · 물 가장자리까지 하늘로 덮였음 → 실제 물체로 그려 구름이 그 앞에 섞이게.
+   구는 깊이를 쓰지 않아(depthMask false) 지형 · 건물이 가리고, 지평선 아래는 버림 */
+const SKY_MATERIAL_SRC = `
+  float hh(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y)*p3.z); }
+  float nn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3. - 2.*f); return mix(mix(hh(i), hh(i + vec2(1, 0)), f.x), mix(hh(i + vec2(0, 1)), hh(i + vec2(1, 1)), f.x), f.y); }
+  float fbm(vec2 p){ float v = 0., a = .5; for (int i = 0; i < 5; i++) { v += a*nn(p); p = mat2(.8, .6, -.6, .8)*p*2.03 + 17.1; a *= .5; } return v; }
+  czm_material czm_getMaterial(czm_materialInput materialInput){
+    czm_material m = czm_getDefaultMaterial(materialInput);
+    vec3 wdir = normalize(czm_inverseViewRotation*(-materialInput.positionToEyeEC));
+    // 동 · 북 · 위 좌표 (Material은 3×3 행렬 uniform을 못 받아 축 벡터 셋으로)
+    vec3 l = vec3(dot(eastW, wdir), dot(northW, wdir), dot(upW, wdir)), d = normalize(vec3(l.x, l.z, -l.y));
+    if (d.y < -.015) discard;
+    vec3 sl = vec3(dot(eastW, czm_sunDirectionWC), dot(northW, czm_sunDirectionWC), dot(upW, czm_sunDirectionWC));
+    vec3 grad = mix(hor, zen, pow(max(d.y, 0.), .45));
+    vec3 c = grad;
+    if (on > 0.) {
+      float th = atan(texSun.y, texSun.x) - atan(-sl.y, sl.x);
+      vec2 rot = vec2(cos(th), sin(th));
+      vec3 r = vec3(d.x*rot.x - d.z*rot.y, max(d.y, 0.), d.x*rot.y + d.z*rot.x);
+      vec2 p = r.xz/(abs(r.x) + r.y + abs(r.z) + 1e-6), uv = vec2(p.x + p.y, p.x - p.y)*.5 + .5;
+      c = mix(grad, mix(texture2D(image, vec2(uv.x, 1. - uv.y)).rgb*gain, grad, tint), on);
+    }
+    c *= dim;
+    if (cover > 0. && d.y > 0.) {   // 먼 하늘 날씨 구름 (가까운 구름은 3D 구름)
+      vec2 q = d.xz/(d.y + .08)*1.3 + wind*time*.004;
+      float n = fbm(q), cv = smoothstep(.55 - cover*.6, .8 - cover*.55, n);
+      float lit = fbm(q*1.9 + vec2(4.3, 1.7) + sl.xy*.15);
+      vec3 cl = mix(vec3(.42, .45, .5), vec3(.95, .96, .98), smoothstep(.3, .75, lit))*(1. - .65*gloom);
+      c = mix(c, cl, clamp(cv*smoothstep(0., .2, d.y) + smoothstep(.55, 1., cover)*.85, 0., 1.)*.95);
+    }
+    m.diffuse = vec3(0.); m.emission = c; m.alpha = 1.;
+    return m;
+  }`;
+
 /* ───── 공유: 후처리 · 바다 · 해수면 ───── */
 function createShared(viewer, Cesium) {
   const scene = viewer.scene, t0 = performance.now(), time = () => (performance.now() - t0) / 1000;
@@ -139,53 +177,93 @@ function createShared(viewer, Cesium) {
   const MA = window.MapAtmosphere;
   const sky = { id: null, on: 0, texSun: new Cesium.Cartesian2(1, 0), tint: 0, gain: 1, hor: new Cesium.Cartesian3(.7, .75, .8), zen: new Cesium.Cartesian3(.2, .4, .7) };
   const toLocal = new Cesium.Matrix3(), enuM = new Cesium.Matrix4();
-  const skyStage = new Cesium.PostProcessStage({ fragmentShader: SKY_FS, uniforms: {
-    u_sky: '../data/sky/clear-noon.jpg', u_on: () => sky.on, u_texSun: () => sky.texSun, u_tint: () => sky.tint, u_gain: () => sky.gain, u_hor: () => sky.hor, u_zen: () => sky.zen,
-    u_dim: () => 1 - .5 * cur.gloom, u_cover: () => cur.clouds, u_gloom: () => cur.gloom, u_time: time,
-    u_wind: () => { const a = (cur.dir + 180) * Math.PI / 180, w = Math.max(3, cur.wind); return new Cesium.Cartesian2(Math.sin(a) * w, -Math.cos(a) * w); },
-    u_toLocal: () => { Cesium.Transforms.eastNorthUpToFixedFrame(viewer.camera.positionWC, Cesium.Ellipsoid.WGS84, enuM); return Cesium.Matrix3.transpose(Cesium.Matrix4.getMatrix3(enuM, toLocal), toLocal); },
-  } });
-  skyStage.enabled = false; scene.postProcessStages.add(skyStage);
+  // 카메라 방향을 그 자리 동 · 북 · 위 좌표로 (하늘 셰이더용)
+  const camBasis = { toLocal, r: new Cesium.Cartesian3(), u: new Cesium.Cartesian3(), d: new Cesium.Cartesian3(), tan: new Cesium.Cartesian2(1, 1) };
+  function updateCamBasis() {
+    const cam = viewer.camera, f = cam.frustum;
+    Cesium.Transforms.eastNorthUpToFixedFrame(cam.positionWC, Cesium.Ellipsoid.WGS84, enuM);
+    Cesium.Matrix3.transpose(Cesium.Matrix4.getMatrix3(enuM, toLocal), toLocal);
+    Cesium.Matrix3.multiplyByVector(toLocal, cam.rightWC, camBasis.r); Cesium.Matrix3.multiplyByVector(toLocal, cam.upWC, camBasis.u); Cesium.Matrix3.multiplyByVector(toLocal, cam.directionWC, camBasis.d);
+    const ty = Math.tan((f.fovy || f.fov || 1) / 2), aspect = f.aspectRatio || (scene.canvas.clientWidth / Math.max(1, scene.canvas.clientHeight));
+    camBasis.tan.x = ty * aspect; camBasis.tan.y = ty;
+  }
+  const skyMat = new Cesium.Material({ fabric: { type: 'SkyTemplate', source: SKY_MATERIAL_SRC, uniforms: {
+    image: '../data/sky/clear-noon.jpg', eastW: new Cesium.Cartesian3(1, 0, 0), northW: new Cesium.Cartesian3(0, 1, 0), upW: new Cesium.Cartesian3(0, 0, 1), texSun: new Cesium.Cartesian2(1, 0), tint: 0, gain: 1,
+    hor: new Cesium.Cartesian3(.7, .75, .8), zen: new Cesium.Cartesian3(.2, .4, .7), on: 0, dim: 1, cover: 0, gloom: 0, wind: new Cesium.Cartesian2(3, 0), time: 0 } } });
+  const skyPrim = scene.primitives.add(new Cesium.Primitive({
+    geometryInstances: new Cesium.GeometryInstance({ geometry: new Cesium.EllipsoidGeometry({ radii: new Cesium.Cartesian3(1, 1, 1), stackPartitions: 48, slicePartitions: 96, vertexFormat: Cesium.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat }) }),
+    appearance: new Cesium.MaterialAppearance({ material: skyMat, flat: true, faceForward: false, translucent: false, closed: false,
+      renderState: { depthMask: false, depthTest: { enabled: true }, cull: { enabled: false } } }),
+    asynchronous: false, show: false,
+  }));
+  const skyScale = new Cesium.Matrix4();
+  function updateSkySphere() {
+    const want = (!!sky.id || cur.clouds > .02) && camH < 60000;
+    skyPrim.show = want; if (!want) return;
+    const r = clamp(Math.sqrt(2 * 6371000 * Math.max(camH, 10)) * 1.3 + 30000, 60000, 900000);
+    Cesium.Matrix4.fromUniformScale(r, skyScale); Cesium.Matrix4.setTranslation(skyScale, viewer.camera.positionWC, skyScale);
+    skyPrim.modelMatrix = skyScale;
+    const u = skyMat.uniforms;
+    u.eastW = Cesium.Matrix4.getColumn(enuM, 0, new Cesium.Cartesian4()); u.northW = Cesium.Matrix4.getColumn(enuM, 1, new Cesium.Cartesian4()); u.upW = Cesium.Matrix4.getColumn(enuM, 2, new Cesium.Cartesian4());
+    u.eastW = new Cesium.Cartesian3(u.eastW.x, u.eastW.y, u.eastW.z); u.northW = new Cesium.Cartesian3(u.northW.x, u.northW.y, u.northW.z); u.upW = new Cesium.Cartesian3(u.upW.x, u.upW.y, u.upW.z); u.on = sky.on; u.texSun = sky.texSun; u.tint = sky.tint; u.gain = sky.gain; u.hor = sky.hor; u.zen = sky.zen;
+    u.dim = 1 - .5 * cur.gloom * wx(); u.cover = cur.clouds * wx(); u.gloom = cur.gloom * wx(); u.time = time();
+    const a2 = (cur.dir + 180) * Math.PI / 180, w = Math.max(3, cur.wind); u.wind = new Cesium.Cartesian2(Math.sin(a2) * w, -Math.cos(a2) * w);
+  }
   const hex3 = h => { const c = Cesium.Color.fromCssColorString('#' + h.toString(16).padStart(6, '0')); return new Cesium.Cartesian3(c.red, c.green, c.blue); };
   function setSky(id) {
     const def = id && MA && MA.SKY[id];
     sky.id = def ? id : null; if (!def) sky.on = 0;
     if (!def) return;
-    skyStage.uniforms.u_sky = `../data/sky/${id}.jpg`;
+    skyMat.uniforms.image = `../data/sky/${id}.jpg`;
     sky.texSun = new Cesium.Cartesian2(def.sun[0], def.sun[1]); sky.tint = def.tint || 0; sky.gain = def.gain || 1; sky.hor = hex3(def.horizon); sky.zen = hex3(def.zenith);
   }
   // 바다 · 강 · 호수 물 표면 (OpenFreeMap 물 다각형)
   let W = null; try { W = createWaterLayer(viewer, Cesium); } catch (e) { console.warn('물 표면을 쓸 수 없습니다', e); }
+  // 실제 높이 · 크기의 3D 구름 + 구름에서 내리는 비 · 눈 (재난이 만들거나 백엔드 구름 목록)
+  let C = null; try { C = createCloudLayer(viewer, Cesium); } catch (e) { console.warn('3D 구름을 쓸 수 없습니다', e); }
+  let here = { k: 0 };
   const stages = {
     cover: new Cesium.PostProcessStage({ fragmentShader: COVER_FS, uniforms: { u_cover: () => cur.cover, u_upEC: () => {
       const n = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(viewer.camera.positionWC, scratch);
       return Cesium.Cartesian3.normalize(Cesium.Matrix4.multiplyByPointAsVector(viewer.camera.viewMatrix, n, upEC), upEC);
     } } }),
-    atmos: new Cesium.PostProcessStage({ fragmentShader: ATMOS_FS, uniforms: { u_vis: () => cur.vis, u_tint: () => cur.tint, u_tintAmt: () => cur.tintAmt, u_gloom: () => cur.gloom, u_heat: () => cur.heat, u_time: time, u_camH: () => camH, u_layer: () => 1200 } }),
-    rain: new Cesium.PostProcessStage({ fragmentShader: RAIN_FS, uniforms: { u_rain: () => cur.rain * inLayer(), u_time: time, u_angle: () => rainAngle() } }),
+    atmos: new Cesium.PostProcessStage({ fragmentShader: ATMOS_FS, uniforms: { u_vis: () => visEff(), u_tint: () => cur.tint, u_tintAmt: () => cur.tintAmt * wx(), u_gloom: () => cur.gloom * wx(), u_heat: () => cur.heat, u_time: time, u_camH: () => camH, u_layer: () => 800 } }),
+    rain: new Cesium.PostProcessStage({ fragmentShader: RAIN_FS, uniforms: { u_rain: () => screenPrecip('rain'), u_time: time, u_angle: () => rainAngle() } }),
     shake: new Cesium.PostProcessStage({ fragmentShader: SHAKE_FS, uniforms: { u_shake: () => shake } }),
-    snow: new Cesium.PostProcessStage({ fragmentShader: SNOW_FS, uniforms: { u_snow: () => cur.snow * inLayer(), u_time: time, u_wind: () => clamp(cur.wind / 15, 0, 1.5) * windSide() } }),
+    snow: new Cesium.PostProcessStage({ fragmentShader: SNOW_FS, uniforms: { u_snow: () => screenPrecip('snow'), u_time: time, u_wind: () => clamp(cur.wind / 15, 0, 1.5) * windSide() } }),
   };
   for (const s of Object.values(stages)) { s.enabled = false; scene.postProcessStages.add(s); }
+  // 시정: 실제 값(비 90 mm/h면 약 1.5 km)은 화면이 거의 안 보여서 기본은 10배 (최소 18 km). '실제 시정' 켜면 실제 값
+  const opt = { realVis: false };
+  const visEff = () => { const v = opt.realVis ? cur.vis : clamp(cur.vis * 10, 18000, 40000); return lerp(40000, v, wx()); };
   const shake = new Cesium.Cartesian3(); // 화면 흔들림 (x, y 화면 비율, z 회전 rad)
   // 카메라의 지면 위 높이: 비 · 눈 층(1.2 km) 위로 올라가면 화면 빗줄기를 줄임
   let camH = 100;
   const inLayer = () => .25 + .75 * clamp(1500 / Math.max(camH, 1), 0, 1);
+  const wx = () => clamp(1 - (camH - 2500) / 5500, 0, 1); // 날씨가 보이는 정도 (구름층 위 · 우주에선 0)
+  // 화면 비 · 눈: 3D 구름이 있으면 카메라 머리 위 비 · 눈 구름 밑에 있을 때만 (구름 밖 · 위에선 빗줄기 커튼으로만 보임)
+  const screenPrecip = kind => {
+    if (C && C.active) return here.kind === kind ? here.k * Math.max(kind === 'rain' ? cur.rain : cur.snow, .7) : 0;
+    return (kind === 'rain' ? cur.rain : cur.snow) * wx();
+  };
   // 바람이 화면에서 어느 쪽으로 부는지 (비 기울기 · 눈 흐름)
   const windSide = () => Math.sin(((cur.dir + 180) * Math.PI / 180) - viewer.camera.heading);
   const rainAngle = () => -windSide() * clamp(cur.wind / 40, 0, .7);
 
   scene.preRender.addEventListener((_, now) => {
+    updateCamBasis();
     const cc = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC); if (cc) camH = Math.max(1, cc.height - (scene.globe.getHeight(cc) ?? 0));
     const k = .05;
     for (const key of ['vis', 'tintAmt', 'gloom', 'heat', 'rain', 'snow', 'cover', 'wind']) cur[key] = lerp(cur[key], look[key], key === 'cover' ? .08 : k);
     cur.dir = look.dir; Cesium.Cartesian3.lerp(cur.tint, look.tint, k, cur.tint);
-    stages.atmos.enabled = cur.vis < 39000 || cur.gloom > .01 || cur.tintAmt > .01 || cur.heat > .01;
+    stages.atmos.enabled = wx() > 0 && (visEff() < 39000 || cur.gloom > .01 || cur.tintAmt > .01 || cur.heat > .01);
     stages.shake.enabled = Math.abs(shake.x) + Math.abs(shake.y) + Math.abs(shake.z) > 1e-5;
-    stages.rain.enabled = cur.rain > .01; stages.snow.enabled = cur.snow > .01; stages.cover.enabled = cur.cover > .005;
-    cur.clouds = lerp(cur.clouds || 0, clamp(cur.gloom * 1.3 + cur.rain * .6 + cur.snow * .6, 0, 1), .03);
-    skyStage.enabled = !!sky.id || cur.clouds > .02;
-    if (sky.id) sky.on = (camH < 60000 ? 1 : 0) * (1 - inLayer() * (1 - smoothstep01(1500, 30000, cur.vis)) * .9) * (1 - .6 * clamp(cur.rain + cur.snow, 0, 1));
+    if (C) { C.tick(time()); here = C.precipHere(); }
+    stages.rain.enabled = screenPrecip('rain') > .01; stages.snow.enabled = screenPrecip('snow') > .01; stages.cover.enabled = cur.cover > .005;
+    // 하늘 사진 위 구름 무늬: 3D 구름이 있으면 먼 하늘을 흐리게 하는 정도로만
+    cur.clouds = lerp(cur.clouds || 0, clamp(cur.gloom * 1.3 + cur.rain * .6 + cur.snow * .6, 0, 1) * (C && C.active ? .45 : 1), .03);
+    if (sky.id) sky.on = (camH < 60000 ? 1 : 0) * (1 - wx() * .6 * clamp(cur.rain + cur.snow + cur.gloom, 0, 1));
+    updateSkySphere();
     if (W) W.setSeaRise(seaRise || 0);
     for (const f of tickers) f(time());
   });
@@ -195,7 +273,7 @@ function createShared(viewer, Cesium) {
   function setLook(env = {}) {
     const c = env.tint != null ? Cesium.Color.fromCssColorString('#' + env.tint.toString(16).padStart(6, '0')) : null;
     Object.assign(look, {
-      vis: env.vis ?? 40000, tintAmt: env.tintAmt ?? 0, gloom: (env.gloom ?? 0) * .6, // 너무 어두우면 건물이 안 보여서 60%만 heat: env.heat ?? 0,
+      vis: env.vis ?? 40000, tintAmt: env.tintAmt ?? 0, gloom: (env.gloom ?? 0) * .6, heat: env.heat ?? 0, // gloom: 너무 어두우면 건물이 안 보여서 60%만
       rain: clamp((env.rain ?? 0) / 100, 0, 1.2), snow: clamp((env.snow ?? 0) / 6, 0, 1.2), wind: env.wind ?? 0, dir: env.dir ?? 0,
     });
     if (c) look.tint = new Cesium.Cartesian3(c.red, c.green, c.blue);
@@ -352,7 +430,7 @@ function createShared(viewer, Cesium) {
     return out;
   };
 
-  return { shake, groundLine, floodSurface, look, cur, setSky, get sky() { return sky.id; }, W, get camH() { return camH; }, setLook, seaLevelAt, get seaLevel() { return seaN; }, water, setOcean, set seaRise(v) { seaRise = v; }, tickers, time, ringPositions };
+  return { C, opt, shake, groundLine, floodSurface, look, cur, setSky, get sky() { return sky.id; }, W, get camH() { return camH; }, setLook, seaLevelAt, get seaLevel() { return seaN; }, water, setOcean, set seaRise(v) { seaRise = v; }, tickers, time, ringPositions };
 }
 
 /* ───── 재난별 효과 ───── */
@@ -409,8 +487,24 @@ function createEffect(type, ctx, S) {
   /* 산불 */
   let fire = null;
 
+  /* 재난 구름: 태풍 = 적란운 · 난층운 폭우, 호우 = 난층운, 대설 = 층적운 눈. 백엔드 구름을 받은 상태면 그걸 그대로 둠 */
+  let cloudKey = '', cloudTimer = 0;
+  function cloudSpec() {
+    if (type === 'typhoon') return { kind: 'storm', amount: clamp(p.wind / 50, .4, 1), gloom: env.gloom || .6, wind: p.wind * .6, dir: p.dir, precip: p.rain > 0 ? 'rain' : null, rate: clamp(p.rain / 120, 0, 1), radius: 25000 };
+    if (type === 'flood') return { kind: 'rain', amount: clamp(p.rain / 120, .4, 1), gloom: env.gloom || .5, wind: 6, dir: 200, precip: 'rain', rate: clamp(p.rain / 150, .2, 1), radius: 14000 };
+    if (type === 'snow') return { kind: 'snow', amount: clamp(p.rate / 8, .4, 1), gloom: env.gloom || .4, wind: p.wind, dir: 320, precip: 'snow', rate: clamp(p.rate / 8, .2, 1), radius: 16000 };
+    return null;
+  }
+  function scheduleClouds() {
+    if (!S.C || S.C.api) return;
+    const c = cloudSpec(), key = c ? JSON.stringify(c, (k, v) => typeof v === 'number' ? Math.round(v * 10) / 10 : v) : '';
+    if (key === cloudKey) return; cloudKey = key;
+    clearTimeout(cloudTimer);
+    cloudTimer = setTimeout(() => { if (!alive) return; if (c) S.C.set({ longitude, latitude, groundHeight, ...c }); else S.C.clear(); }, 300);
+  }
   function apply() {
     env = def.env(p);
+    scheduleClouds();
     // 산불: 연기는 입자로 직접 보이므로 화면 전체 연무는 옅게 (후처리 안개가 반투명 입자 위에 덮여 연기를 가리지 않게)
     S.setLook(type === 'wildfire' ? { ...env, vis: Math.max(env.vis, 30000), tintAmt: (env.tintAmt || 0) * .4, gloom: 0 } : env);
     if (waterSpec) {
@@ -584,6 +678,7 @@ function createEffect(type, ctx, S) {
     const dt = snowLast == null ? 0 : now - snowLast; snowLast = now;
     const end = p.hours + p.melt; snowT = Math.min(end, snowT + dt * end / 45);
     const falling = snowT < p.hours;
+    if (S.C) S.C.setPrecip(falling);
     S.setLook(falling ? env : { ...env, snow: 0, vis: 40000, gloom: (env.gloom || 0) * .2, tintAmt: (env.tintAmt || 0) * .3 });
     S.look.cover = clamp(Phys.snowDepth(p, snowT) / 15, 0, 1); // 15 cm면 땅이 거의 다 덮임
     S.onProgress && S.onProgress('time', snowT);
@@ -605,6 +700,7 @@ function createEffect(type, ctx, S) {
       clearFire();
       S.setLook({}); S.look.cover = 0; S.seaRise = 0;
       if (usesB) B.end();
+      clearTimeout(cloudTimer); if (S.C && !S.C.api) S.C.clear();
     },
   };
 }

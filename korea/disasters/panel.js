@@ -75,7 +75,11 @@ export function attachDisasterPanel({ viewer, Cesium, disasters }) {
       </div>
       <div id="dx-tab-env" hidden>
         <h3>하늘</h3><select id="dx-sky"><option value="">브이월드 기본 하늘</option></select>
+        <label class="check"><input type="checkbox" id="dx-skyauto" checked> 재난에 맞는 하늘로 자동 바꾸기</label>
         <p class="note">템플릿 뷰어의 하늘 사진을 지도 하늘에 입힙니다. 사진 속 해는 실제 해 방향에 맞춰 돌립니다.</p>
+        <h3>날씨 보이기</h3>
+        <label class="check"><input type="checkbox" id="dx-realvis"> 실제 시정 (비 · 눈으로 실제 보이는 거리만큼 뿌옇게)</label>
+        <p class="note">끄면 6배 멀리까지 보입니다. 비 · 구름 · 안개는 카메라가 약 3 km보다 높아지면 옅어지고 8 km 위에선 사라집니다.</p>
         <h3>바다 · 강</h3>
         <label class="check"><input type="checkbox" id="dx-water" checked> 물 표면 (실제 바다 · 강 · 호수 다각형)</label>
         <select id="dx-sea" style="margin-top:8px"><option value="">기본 바다 색</option></select>
@@ -94,6 +98,8 @@ export function attachDisasterPanel({ viewer, Cesium, disasters }) {
   });
 
   let type = 'typhoon', params = {}, site = null, running = null, data = null;
+  // 재난 → 하늘 템플릿 (템플릿 뷰어의 하늘 사진). 지진 · 해일은 하늘을 바꾸지 않음
+  const DISASTER_SKY = { typhoon: 'thunder-storm', flood: 'slate-overcast', snow: 'blizzard-gray', heatwave: 'golden-dusk', wildfire: 'amber-dawn', sealevel: 'cumulus-blue', tsunami: 'sea-fog' };
   const defaults = t => Object.fromEntries(TYPES[t].params.map(q => [q.key, q.value]));
   params = defaults(type);
 
@@ -117,6 +123,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters }) {
     if (!at) { $('dx-site').textContent = '지도를 클릭해 발생 지점을 고르세요.'; return; }
     for (const t of Object.keys(TYPES)) if (t !== type && disasters.isActive(t)) disasters.stop(t);
     running = type; render();
+    if ($('dx-skyauto').checked && DISASTER_SKY[type] && api.sky) api.sky(DISASTER_SKY[type]);
     await disasters.start({ type, longitude: at.longitude, latitude: at.latitude, intensity: 1, params: { ...params } });
     $('dx-site').textContent = siteText(at, site ? '' : ' (화면 가운데)');
   }
@@ -211,6 +218,7 @@ export function attachDisasterPanel({ viewer, Cesium, disasters }) {
   /* 하늘 · 물 탭 */
   const W = S.W;
   if (W) W.setEnabled(true);
+  $('dx-realvis').onchange = e => { S.opt.realVis = e.target.checked; };
   $('dx-water').onchange = e => W && W.setEnabled(e.target.checked);
   fetch('../data/catalog.json').then(r => r.json()).then(cat => {
     for (const s2 of cat.skies) $('dx-sky').append(new Option(s2.name, s2.id));
@@ -235,6 +243,8 @@ export function attachDisasterPanel({ viewer, Cesium, disasters }) {
       render(true); return start();
     },
     stop, get: () => ({ type: running, params: { ...params }, site, data }), effects: S,
+    // 백엔드 구름: [{ id, longitude, latitude, base | baseAboveGround, width, height, depth?, speed, direction, precip?, rate?, darkness? }]
+    clouds: { load: (list, origin) => S.C && S.C.load(list, origin), update: list => S.C && S.C.update(list), clear: () => S.C && S.C.clear() },
     sky: id => S.setSky(id || null), sea: () => {},
   };
   window.koreaDisaster = api;
