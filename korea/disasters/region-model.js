@@ -94,8 +94,54 @@ export function scenarioView(s, allowAssumed = false) {
     reason: verified ? null : (s.reason || '확인된 자료 없음: 준공이 확인된 배수 · 방재 시설 변화가 없습니다.'),
     quality: QUALITY_LABEL[s.data_quality] || '', assumptions: Array.isArray(s.assumptions) ? s.assumptions : [],
     baselineDate: s.baseline_date || null, position: s.position || null, rows,
+    facilities: Array.isArray(s.facilities) ? s.facilities : null, whatIf: !!s.whatIf, level: s.level || 'completed',
     before: s.before, after: s.after,
     sources: (s.sources || []).filter(x => /^https?:\/\//i.test(x.url || '')),
+  };
+}
+
+/* 반영할 시설 범위: 준공만(백엔드와 같은 기준) / 착공 · 공사 중까지 / 계획까지 */
+export const FACILITY_LEVELS = {
+  completed: ['준공만', ['completed']],
+  building: ['착공 · 공사 중까지', ['completed', 'under_construction']],
+  planned: ['계획까지', ['completed', 'under_construction', 'planned']],
+};
+// 기사에 설계 강우량이 없을 때 시설 하나가 늘리는 배수 능력 (mm/h, 시연용 가정값). 차수벽 · 제방은 하천 범람을 막는 시설이라 배수 능력엔 넣지 않음
+export const DRAIN_GAIN = { drainage_pump: 15, retention: 10, drainage_pipe: 5, floodwall: 0, levee_river: 0 };
+const DRAIN_MAX = 120; // 지도 효과 배수 능력 최대 (js/disaster.js flood drain)
+
+/* 고른 범위의 배수 시설로 '공사 후' 배수 능력을 다시 정한 시나리오 (백엔드 scenario 모양 그대로 → scenarioView에 넣음).
+   공사 전 = 백엔드 값(기사 또는 가정 40). 공사 후 = 반영 시설 중 기사 설계 강우량(design_rain_after_mm_h)의 최댓값,
+   없으면 공사 전 + 시설 종류별 가정 증가분의 합. 비 · 시간 · 위치는 백엔드 값 그대로 (배수만 바뀜) */
+export function facilityScenario(result, level = 'completed') {
+  const s = result?.scenario;
+  if (!s?.before?.params || !s?.after?.params) return null;
+  const statuses = (FACILITY_LEVELS[level] || FACILITY_LEVELS.completed)[1];
+  const facilities = (Array.isArray(result.changes) ? result.changes : [])
+    .filter(c => Object.hasOwn(DRAIN_GAIN, c.change_type) && statuses.includes(c.status))
+    .map(c => {
+      const article = Number(c.metrics?.design_rain_after_mm_h);
+      return { id: c.id, name: c.facility_name || c.description || '', type: c.change_type, status: c.status, date: c.date || null,
+        evidence: c.evidence_status, article: Number.isFinite(article) && article > 0 ? article : null, gain: DRAIN_GAIN[c.change_type] };
+    });
+  const before = s.before.params.drain;
+  const articles = facilities.filter(f => f.article != null).map(f => f.article);
+  const counted = facilities.filter(f => f.article != null || f.gain > 0);
+  let after = before, afterEvidence = 'assumed';
+  if (articles.length) { after = Math.max(before, ...articles); afterEvidence = 'article'; }
+  else after = Math.min(DRAIN_MAX, before + facilities.reduce((sum, f) => sum + f.gain, 0));
+  const whatIf = facilities.some(f => f.status !== 'completed');
+  const evidence = { ...(s.param_evidence || {}), drain_after: afterEvidence };
+  const assumptions = (s.assumptions || []).filter(a => !/^drain_after/.test(a));
+  if (afterEvidence === 'assumed' && counted.length) assumptions.push(`drain_after = ${after} (공사 전 ${before} + 시설 종류별 가정 증가분, 실제 설계값 아님)`);
+  const assumedCount = Object.values(evidence).filter(v => v === 'assumed').length;
+  return {
+    ...s,
+    after: { ...s.after, params: { ...s.after.params, ...s.before.params, drain: after } },
+    param_evidence: evidence, assumptions, facilities, whatIf, level,
+    comparison_available: counted.length > 0 && (level !== 'completed' || s.comparison_available),
+    reason: counted.length ? s.reason : `확인된 자료 없음: ${FACILITY_LEVELS[level]?.[0] || ''} 범위에 배수 능력을 늘리는 시설이 없습니다.`,
+    data_quality: assumedCount === 0 ? 'evidence' : assumedCount === Object.keys(evidence).length ? 'illustrative' : 'partial',
   };
 }
 

@@ -8,6 +8,7 @@
    기사 근거 + 가정 기반 비교이고 실제 침수 예측이 아님. 준공이 확인된 배수 시설이 없으면 비교를 막고, 사용자가 '가정 시나리오'를 고를 때만 엶 */
 import {
   jobState, gaveUp, errorMessage, timelineView, scenarioView, changeView, onlyDrainDiffers, regionNameFromAddress, inKoreaPoint, POLL_MS, STAGE_LABEL,
+  facilityScenario, FACILITY_LEVELS, STATUS_LABEL, CHANGE_LABEL,
 } from './region-model.js';
 import { reverseGeocode, findMapPlaces } from '../location-search.js';
 import { articleEffect } from './article-effect.js';
@@ -63,7 +64,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
   const $ = id => box.querySelector('#' + id);
   const st = {
     target: null, name: '', nameNote: '', radius: 5, scope: 'all', visible: false,
-    phase: 'idle', progress: null, error: null, result: null, cached: false, regionId: null, allowAssumed: false, shown: null, notes: {},
+    phase: 'idle', progress: null, error: null, result: null, cached: false, regionId: null, allowAssumed: false, shown: null, notes: {}, level: 'completed',
   };
   let runToken = 0, geoToken = 0, nearToken = 0;
 
@@ -263,7 +264,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
   function renderResult() {
     const r = st.result, el = $('ra-result');
     if (!r) { el.innerHTML = ''; return; }
-    const tl = timelineView(r), sv = scenarioView(r.scenario, st.allowAssumed);
+    const tl = timelineView(r), sv = currentScenario();
     // 재현 가능 여부는 카드와 같은 판정 (기사 수치가 없거나 범위 밖이면 버튼 대신 이유)
     const effects = new Map((r.changes || []).filter(c => c.change_type === 'disaster_event')
       .map(c => [c.id, articleEffect({ ...c, type: c.disaster_type }, window.DisasterFX?.TYPES)]));
@@ -281,6 +282,7 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
     el.querySelectorAll('[data-replay]').forEach(b => b.onclick = () => replay(+b.dataset.replay));
     el.querySelectorAll('[data-fly]').forEach(b => b.onclick = () => { const id = +b.dataset.fly, c = st.result?.changes?.find(x => x.id === id); const at = Number.isFinite(c?.location?.latitude) ? c.location : st.estimated?.[id]; if (at) flyIfHigh(at, true); });
     el.querySelectorAll('[data-card-save]').forEach(b => b.onclick = () => saveCard(+b.dataset.cardSave, b));
+    const lvl = el.querySelector('#ra-level'); if (lvl) lvl.onchange = e => { st.level = e.target.value; st.shown = null; st.notes.scenario = ''; renderResult(); };
     const consent = el.querySelector('#ra-consent');
     if (consent) consent.onchange = e => { st.allowAssumed = e.target.checked; renderResult(); };
     el.querySelectorAll('[data-phase]').forEach(b => b.onclick = () => showScenario(b.dataset.phase));
@@ -312,6 +314,13 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
     const same = onlyDrainDiffers(sv.before, sv.after);
     return `<div class="ra-sec"><h4>홍수 전 · 후 비교 (배수 능력만 바꿈)</h4>
       <p class="ra-warn">기사 근거 + 가정 기반 비교입니다. 공사 전후의 실제 침수 예측이 아닙니다.${sv.quality ? ` · ${esc(sv.quality)}` : ''}</p>
+      <div class="ra-row"><span class="note">반영할 시설</span><select id="ra-level" aria-label="반영할 시설">${Object.entries(FACILITY_LEVELS).map(([k, [name]]) => `<option value="${k}" ${k === st.level ? 'selected' : ''}>${name}</option>`).join('')}</select></div>
+      ${sv.facilities ? (sv.facilities.length ? `<ul class="ra-src">${sv.facilities.map(f => {
+        const [sName, sColor] = STATUS_LABEL[f.status] || STATUS_LABEL.unknown;
+        const gain = f.article != null ? `기사 설계 강우 ${f.article} mm/h` : f.gain ? `+${f.gain} mm/h (가정)` : '하천 범람 방지 · 배수 능력엔 미반영';
+        return `<li>${esc(f.name || CHANGE_LABEL[f.type] || '')} <span class="ra-badge" style="color:${sColor};border-color:${sColor}88">${esc(sName)}</span> · ${esc(gain)}${f.evidence === 'inferred' ? ' · 근거 문구 미확인' : ''}</li>`;
+      }).join('')}</ul>` : '<p class="note">이 범위에 배수 · 방재 시설이 없습니다.</p>') : ''}
+      ${sv.whatIf ? '<p class="note ra-err">계획 · 공사 중인 시설이 모두 완공된다고 가정한 비교입니다.</p>' : ''}
       <table><thead><tr><th>값</th><th>공사 전</th><th>공사 후</th></tr></thead><tbody>
         ${sv.rows.map(r => `<tr><td>${esc(r.label)}</td><td class="${r.changed ? 'chg' : ''}">${cell(r.before, r.unit)} ${badge(r.evidenceBefore)}</td><td class="${r.changed ? 'chg' : ''}">${cell(r.after, r.unit)} ${badge(r.evidenceAfter)}</td></tr>`).join('')}
         ${dB != null ? `<tr><td>저지대 침수 깊이 (간이 공식)</td><td>${dB.toFixed(1)} m</td><td>${dA.toFixed(1)} m</td></tr>` : ''}
@@ -327,9 +336,11 @@ export function attachRegionAnalysis({ box, apiBase, viewer, Cesium, panel, type
       ${same ? '' : '<p class="note ra-err">전 · 후에 배수 능력 말고 다른 값도 달라 비교하지 않습니다.</p>'}
       ${st.notes.scenario ? `<p class="note" role="status">${esc(st.notes.scenario)}</p>` : ''}</div>`;
   }
+  // 반영할 시설 범위(st.level)에 맞춰 '공사 후' 배수 능력을 다시 정한 시나리오 (region-model.js facilityScenario)
+  const currentScenario = () => scenarioView(facilityScenario(st.result, st.level) ?? st.result?.scenario, st.allowAssumed);
   const point = () => st.target && inKoreaPoint(st.target) ? { longitude: st.target.longitude, latitude: st.target.latitude } : null;
   async function showScenario(phase) {
-    const sv = scenarioView(st.result?.scenario, st.allowAssumed);
+    const sv = currentScenario();
     if (!sv.available || !onlyDrainDiffers(sv.before, sv.after) || !panel) return;
     const s = sv[phase], at = point() || sv.position; // 같은 위치 · 비 · 시간, 배수 능력만 다름 (카메라는 그대로, 너무 높을 때만 내려감)
     flyIfHigh(at, false, 'flood');

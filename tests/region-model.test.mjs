@@ -84,6 +84,38 @@ test('comparison without a verified completed facility needs explicit consent', 
   assert.equal(verified.rows.find(r => r.key === 'rain').changed, false);
 });
 
+test('facility level raises assumed drain capacity by what is counted, article values win', async () => {
+  const { facilityScenario } = await import('../korea/disasters/region-model.js');
+  const r = { scenario: scenario({ comparison_available: true, reason: null }), changes: [
+    change({ id: 1, change_type: 'drainage_pump', status: 'completed' }),
+    change({ id: 2, change_type: 'retention', status: 'under_construction' }),
+    change({ id: 3, change_type: 'drainage_pipe', status: 'planned' }),
+    change({ id: 4, change_type: 'levee_river', status: 'planned' }),                   // 배수 능력엔 안 넣음
+    change({ id: 5, change_type: 'disaster_event', status: 'occurred' }),
+  ] };
+  const done = facilityScenario(r, 'completed');
+  assert.equal(done.after.params.drain, 55);           // 40 + 펌프 15
+  assert.equal(done.whatIf, false);
+  assert.equal(facilityScenario(r, 'building').after.params.drain, 65);  // + 저류 10
+  const planned = facilityScenario(r, 'planned');
+  assert.equal(planned.after.params.drain, 70);        // + 관로 5, 제방 0
+  assert.equal(planned.whatIf, true);
+  assert.equal(planned.comparison_available, true);
+  assert.equal(planned.param_evidence.drain_after, 'assumed');
+  assert.deepEqual(planned.facilities.map(f => f.id), [1, 2, 3, 4]);
+  assert.equal(planned.after.params.rain, planned.before.params.rain); // 비 · 시간은 그대로
+  // 기사에 설계 강우량이 있으면 그 값 (가정 증가분 대신)
+  r.changes.push(change({ id: 6, change_type: 'drainage_pump', status: 'planned', metrics: { design_rain_after_mm_h: 95 } }));
+  const art = facilityScenario(r, 'planned');
+  assert.equal(art.after.params.drain, 95);
+  assert.equal(art.param_evidence.drain_after, 'article');
+  // 반영할 시설이 없으면 비교 잠금
+  const none = facilityScenario({ scenario: scenario(), changes: [change({ status: 'planned' })] }, 'completed');
+  assert.equal(none.comparison_available, false);
+  assert.match(none.reason, /확인된 자료 없음/);
+  assert.equal(none.after.params.drain, 40);
+});
+
 test('before/after differ only in drain capacity', () => {
   const s = scenario();
   assert.equal(onlyDrainDiffers(s.before, s.after), true);
