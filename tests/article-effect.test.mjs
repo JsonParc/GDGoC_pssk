@@ -44,6 +44,19 @@ test('out-of-range values are not silently clamped to a different magnitude', ()
   assert.equal(result.params.M, 12);
   assert.ok(result.reason);
 });
+test('small observed tsunamis (under 1 m, common on the Korean coast) can be reproduced', () => {
+  // 2024-01 노토 지진 여파, 동해 묵호항 관측 85 cm
+  const result = articleEffect(card('tsunami', 'tsunami', {}, { height: 0.85 }, { height: 'article' }), TYPES);
+  assert.equal(result.ready, true);
+  assert.equal(result.params.height, 0.85);
+  assert.equal(result.params.runup, 1);
+});
+test('large foreign wildfires (tens of thousands of hectares) can be reproduced', () => {
+  // 프랑스 남서부 · 남동부 대형 산불 42,000 ha
+  const result = articleEffect(card('wildfire', 'wildfire', { burned_area_ha: 42000 }, { area: 42000, humidity: 80 }, { area: 'article', humidity: 'article' }), TYPES);
+  assert.equal(result.ready, true);
+  assert.equal(result.params.area, 42000);
+});
 test('location must have two finite coordinates in geographic bounds', () => {
   assert.equal(validPosition({ longitude: 126.5, latitude: 33.3 }), true);
   for (const position of [{ longitude: null, latitude: 33 }, { longitude: 126, latitude: 100 }, { longitude: NaN, latitude: 30 }]) {
