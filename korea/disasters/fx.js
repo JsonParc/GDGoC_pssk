@@ -14,6 +14,7 @@ import { getElevation } from '../dem.js';
 import { createBuildingFX } from './buildings.js';
 import { createWaterLayer } from './water.js';
 import { createCloudLayer } from './clouds.js';
+import { floodFill, floodDistance } from './flood-grid.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v)), lerp = (a, b, t) => a + (b - a) * t, sm = x => x * x * (3 - 2 * x);
 const smoothstep01 = (a, b, x) => sm(clamp((x - a) / (b - a), 0, 1));
@@ -319,57 +320,74 @@ function createShared(viewer, Cesium) {
     };
   }
 
+  /* 지형 높이 표본: 브이월드 빌드에선 sampleTerrainMostDetailed가 내부 오류로 실패하고, 레벨 13은 타일이 빈 구역이 생김
+     → 상세한 레벨부터 빈 칸만 다시 잼 (13 → 12 → 11 → 10, 끝으로 화면에 받은 지형). 끝내 모르는 칸은 NaN
+     (예전엔 0 m로 채워서 해수면 아래 = 바다로 잘못 보고 그 구역을 안 그렸음) */
+  async function sampleHeights(cartos) {
+    const tp = viewer.terrainProvider, H = new Float32Array(cartos.length).fill(NaN);
+    let missing = cartos.map((_, k) => k);
+    const take = (res, ks) => res.forEach((c, n) => { if (Number.isFinite(c.height)) H[ks[n]] = c.height; });
+    if (tp.availability) { try { take(await Cesium.sampleTerrainMostDetailed(tp, cartos.map(c => c.clone())), missing); } catch { /* 아래 레벨별 표본으로 */ } }
+    for (const level of [13, 12, 11, 10]) {
+      missing = missing.filter(k => !Number.isFinite(H[k])); if (!missing.length) break;
+      try { take(await Cesium.sampleTerrain(tp, level, missing.map(k => cartos[k].clone())), missing); } catch { /* 이 레벨 실패 */ }
+    }
+    for (const k of missing) { const h = scene.globe.getHeight(cartos[k]); if (Number.isFinite(h)) H[k] = h; }
+    return H;
+  }
+
   /* 이어진 침수면: 발생 지점 둘레 2·half m를 N×N 칸으로 나눠 지도 지형 높이를 재고,
      물이 들어오는 곳(base = 'sea': 해수면 이하 칸 = 근처 바다 / 'point': 발생 지점 칸)에서 시작해
      maxLevel보다 낮고 이어진 칸만 채움 (둑 · 언덕 너머 막힌 저지대는 안 잠김). 물 가장자리는 지형이 가려 지형 모양 그대로.
-     표면은 높이 0으로 만들고 setHeight로 올림 (해일처럼 수위가 바뀌어도 다시 계산 안 함) */
-  async function floodSurface({ longitude, latitude, half, base, maxLevel, color, N = 128 }) {
+     표면은 높이 0으로 만들고 setHeight로 올림 (해일처럼 수위가 바뀌어도 다시 계산 안 함).
+     칸마다 물이 들어온 곳에서 얼마나 떨어졌는지(도달 거리)를 재서 띠로 묶음 → setReach(m)로 그 거리까지만 보여 물이 밀려드는 모습 */
+  async function floodSurface({ longitude, latitude, half, base, maxLevel, color, N = 128, flow = false }) {
     const enu = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(longitude, latitude));
     const at = (x, y) => Cesium.Cartographic.fromCartesian(Cesium.Matrix4.multiplyByPoint(enu, new Cesium.Cartesian3(x, y, 0), new Cesium.Cartesian3()));
     const cell = 2 * half / N, cartos = [];
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) cartos.push(at((i + .5) * cell - half, (j + .5) * cell - half));
-    const tp = viewer.terrainProvider;
-    let hs;
-    try { hs = (await (tp.availability ? Cesium.sampleTerrainMostDetailed(tp, cartos) : Cesium.sampleTerrain(tp, 13, cartos))).map(c => c.height); }
-    catch { hs = cartos.map(c => scene.globe.getHeight(c) ?? 0); }
-    const H = Float32Array.from(hs, v => Number.isFinite(v) ? v : 0), fill = new Uint8Array(N * N), sea = new Uint8Array(N * N), queue = [];
+    const H = await sampleHeights(cartos), sea = new Uint8Array(N * N), seeds = [];
     const seaH = seaN ?? 0;
-    if (base === 'point') { const k = (N >> 1) * N + (N >> 1); if (H[k] < maxLevel) { fill[k] = 1; queue.push(k); } }
-    else for (let k = 0; k < N * N; k++) if (H[k] <= seaH + .3) { sea[k] = fill[k] = 1; queue.push(k); }
-    while (queue.length) {
-      const k = queue.pop(), i = k % N, j = (k - i) / N;
-      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= N || b >= N) continue;
-        const n = b * N + a; if (fill[n] || H[n] >= maxLevel) continue;
-        fill[n] = 1; queue.push(n);
-      }
-    }
-    // 그릴 칸: 잠긴 육지 칸 + 한 칸 둘레 (가장자리는 지형이 가림). 바다 칸은 지도 바다 표면이 맡음
-    const draw = new Uint8Array(N * N); let count = 0;
+    for (let k = 0; k < N * N; k++) if (H[k] <= seaH + .3) sea[k] = 1; // 바다 칸은 지도 바다 표면이 맡음 (어느 기준이든 안 그림)
+    if (base === 'point') { const k = (N >> 1) * N + (N >> 1); if (H[k] < maxLevel) seeds.push(k); }
+    else for (let k = 0; k < N * N; k++) if (sea[k]) seeds.push(k);
+    const fill = floodFill(N, H, seeds, maxLevel), dist = floodDistance(N, fill, seeds); // flood-grid.js
+    // 그릴 칸: 잠긴 육지 칸 + 한 칸 둘레 (가장자리는 지형이 가림). 둘레 칸의 도달 거리 = 이웃 잠긴 칸 중 가장 가까운 값
+    const reach = new Float32Array(N * N).fill(-1); let count = 0, far = 0;
     for (let k = 0; k < N * N; k++) if (fill[k] && !sea[k]) {
       const i = k % N, j = (k - i) / N;
-      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < N && b < N && !draw[b * N + a]) { draw[b * N + a] = 1; count++; } }
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= N || b >= N) continue;
+        const n = b * N + a, d = dist[k] + Math.hypot(di, dj);
+        if (reach[n] < 0) { count++; reach[n] = d; } else if (d < reach[n]) reach[n] = d;
+        far = Math.max(far, reach[n]);
+      }
     }
-    const out = { count, setHeight() {}, destroy() {} };
+    const out = { count, setHeight() {}, setReach() {}, destroy() {} };
     if (!count) return out;
-    // 칸마다 사각형 두 개 (꼭짓점은 칸 모서리, 타원체 높이 0)
-    const pos = new Float64Array(count * 12), st = new Float32Array(count * 8), idx = new Uint32Array(count * 6); let q = 0;
+    // 도달 거리 띠 (최대 48개). 띠마다 칸 사각형 두 개씩 (꼭짓점은 칸 모서리, 타원체 높이 0)
+    const step = Math.max(1, Math.ceil((far + 1) / 48)), bands = new Map();
+    for (let k = 0; k < N * N; k++) if (reach[k] >= 0) { const b = Math.floor(reach[k] / step); if (!bands.has(b)) bands.set(b, []); bands.get(b).push(k); }
     const corner = (x, y) => Cesium.Matrix4.multiplyByPoint(enu, new Cesium.Cartesian3(x, y, 0), new Cesium.Cartesian3());
-    for (let k = 0; k < N * N; k++) if (draw[k]) {
-      const i = k % N, j = (k - i) / N, x0 = i * cell - half, y0 = j * cell - half;
-      [[x0, y0], [x0 + cell, y0], [x0 + cell, y0 + cell], [x0, y0 + cell]].forEach(([x, y], v) => {
-        const c = Cesium.Cartographic.fromCartesian(corner(x, y)), p0 = Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, 0);
-        pos.set([p0.x, p0.y, p0.z], (q * 4 + v) * 3); st.set([(x + half) / (2 * half), (y + half) / (2 * half)], (q * 4 + v) * 2);
+    const instances = [...bands].map(([b, cells]) => {
+      const pos = new Float64Array(cells.length * 12), st = new Float32Array(cells.length * 8), idx = new Uint32Array(cells.length * 6);
+      cells.forEach((k, q) => {
+        const i = k % N, j = (k - i) / N, x0 = i * cell - half, y0 = j * cell - half;
+        [[x0, y0], [x0 + cell, y0], [x0 + cell, y0 + cell], [x0, y0 + cell]].forEach(([x, y], v) => {
+          const c = Cesium.Cartographic.fromCartesian(corner(x, y)), p0 = Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, 0);
+          pos.set([p0.x, p0.y, p0.z], (q * 4 + v) * 3); st.set([(x + half) / (2 * half), (y + half) / (2 * half)], (q * 4 + v) * 2);
+        });
+        idx.set([q * 4, q * 4 + 1, q * 4 + 2, q * 4, q * 4 + 2, q * 4 + 3], q * 6);
       });
-      idx.set([q * 4, q * 4 + 1, q * 4 + 2, q * 4, q * 4 + 2, q * 4 + 3], q * 6); q++;
-    }
-    const geometry = new Cesium.Geometry({
-      attributes: { position: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
-        st: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 2, values: st }) },
-      indices: idx, primitiveType: Cesium.PrimitiveType.TRIANGLES, boundingSphere: Cesium.BoundingSphere.fromVertices(pos),
+      const geometry = new Cesium.Geometry({
+        attributes: { position: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
+          st: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 2, values: st }) },
+        indices: idx, primitiveType: Cesium.PrimitiveType.TRIANGLES, boundingSphere: Cesium.BoundingSphere.fromVertices(pos),
+      });
+      return new Cesium.GeometryInstance({ geometry, id: 'band' + b, attributes: { show: new Cesium.ShowGeometryInstanceAttribute(!flow) } });
     });
     const prim = scene.primitives.add(new Cesium.Primitive({
-      geometryInstances: new Cesium.GeometryInstance({ geometry }), asynchronous: false, compressVertices: false,
+      geometryInstances: instances, asynchronous: false, compressVertices: false, releaseGeometryInstances: false,
       appearance: new Cesium.EllipsoidSurfaceAppearance({ aboveGround: true, translucent: false, material: Cesium.Material.fromType('Water', {
         baseWaterColor: color, blendColor: Cesium.Color.fromAlpha(color, 1), normalMap: Cesium.buildModuleUrl('Assets/Textures/waterNormals.jpg'),
         frequency: 5000, animationSpeed: .015, amplitude: 4, specularIntensity: .7 }) }),
@@ -378,6 +396,15 @@ function createShared(viewer, Cesium) {
     out.setHeight = h => { prim.show = Number.isFinite(h); if (prim.show) prim.modelMatrix = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(normal, h, off)); };
     out.setColor = c => { prim.appearance.material.uniforms.baseWaterColor = c; };
     out.destroy = () => scene.primitives.remove(prim);
+    // 물이 들어온 곳에서 m 안쪽 띠만 보임. 프리미티브가 한 번 그려지기 전엔 속성을 못 바꿔서 다음 호출(다음 프레임)에 다시
+    const shown = new Map();
+    out.setReach = m => {
+      for (const b of bands.keys()) {
+        const on = b * step * cell <= m;
+        if (shown.get(b) === on) continue;
+        try { prim.getGeometryInstanceAttributes('band' + b).show = Cesium.ShowGeometryInstanceAttribute.toValue(on); shown.set(b, on); } catch { return; }
+      }
+    };
     out.ground = H[(N >> 1) * N + (N >> 1)];
     return out;
   }
@@ -441,7 +468,8 @@ function createEffect(type, ctx, S) {
   function normalize(q = {}) {
     const o = {}; for (const d of def.params) o[d.key] = clamp(Number.isFinite(+q[d.key]) ? +q[d.key] : d.value, d.min, d.max);
     o.polygon = Array.isArray(q.polygon) && q.polygon.length >= 3 ? q.polygon : null; // 지도에 그린 영역 [[경도, 위도], …]
-    o.waterBase = q.waterBase === 'point' || q.waterBase === 'sea' ? q.waterBase : (type === 'flood' ? 'point' : 'sea'); // 물 기준: 근처 바다 / 이 지점
+    // 물 기준: 근처 바다 / 이 지점. 해일은 늘 바다에서 들어옴 (지점 기준이면 바다 위에 물판이 떠 있었음)
+    o.waterBase = type === 'tsunami' ? 'sea' : q.waterBase === 'point' || q.waterBase === 'sea' ? q.waterBase : (type === 'flood' ? 'point' : 'sea');
     for (const key of ['snowDepthCm', 'waterDepthM']) {
       if (Number.isFinite(q[key]) && q[key] >= 0) o[key] = q[key];
     }
@@ -466,9 +494,10 @@ function createEffect(type, ctx, S) {
     const req = ++waterReq;
     let w;
     if (type === 'flood' && p.polygon) w = S.water({ longitude, latitude, ...waterSpec, polygon: p.polygon }); // 직접 그린 영역
-    else w = await S.floodSurface({ longitude, latitude, half: type === 'flood' ? 4000 : 9000, base: p.waterBase, maxLevel: baseH() + waterAmount() + .01, color: waterSpec.color });
+    else w = await S.floodSurface({ longitude, latitude, half: type === 'flood' ? 4000 : 9000, base: p.waterBase, maxLevel: baseH() + waterAmount() + .01, color: waterSpec.color, flow: type === 'tsunami' });
     if (req !== waterReq || !alive) { w.destroy(); return; }
     if (water) water.destroy(); water = w;
+    if (type === 'tsunami') water.setReach(tsReach);
     if (type !== 'tsunami') water.setHeight(baseH() + waterAmount());
   }
   function scheduleWater() {
@@ -658,8 +687,10 @@ function createEffect(type, ctx, S) {
   });
 
   /* ── 지진해일: 실제 주기 12분 파형(먼저 빠지고 → 차오름 → 잠김 → 빠짐 → 두 번째 파)을 재생 배속만큼 빠르게.
-     높이는 해안 처오름 높이(파고 × 배율, 실제 m). 해수면 기준 물판이라 DEM보다 낮은 땅만 잠김 ── */
-  const PERIOD = 720; let tsT0 = S.time();
+     높이는 해안 처오름 높이(파고 × 배율, 실제 m). 해수면 기준 물판이라 DEM보다 낮은 땅만 잠김.
+     물이 해안보다 높은 동안 물 끝이 육지로 밀려 들어감: 속도는 육상 해일 물살 2√(g·h), h = 처오름의 1/4 (4 ~ 30 m/s) ── */
+  const PERIOD = 720; let tsT0 = S.time(), tsReach = 0, tsLast = null;
+  const boreSpeed = () => clamp(2 * Math.sqrt(9.81 * p.height * p.runup * .25), 4, 30);
   const tsEta = (tau, A) => { if (tau <= 0) return 0; const x = tau / PERIOD;
     if (x < .25) return -.4 * A * Math.sin(Math.PI * x / .25);
     if (x < .85) { const y = (x - .25) / .6; return A * (y < .25 ? Math.sin(Math.PI / 2 * y / .25) : Math.cos(Math.PI / 2 * (y - .25) / .75)); }
@@ -668,8 +699,10 @@ function createEffect(type, ctx, S) {
   tick.add(now => {
     if (type !== 'tsunami' || !water) return;
     const sea0 = baseH();
-    let tau = (now - tsT0) * p.speed; if (tau > 1.7 * PERIOD) { tsT0 = now; tau = 0; }
-    const lv = sea0 + Math.max(tsEta(tau, p.height * p.runup), -3); water.setHeight(lv); S.seaRise = p.waterBase === 'point' ? 0 : lv - sea0;
+    let tau = (now - tsT0) * p.speed; if (tau > 1.7 * PERIOD) { tsT0 = now; tau = 0; tsReach = 0; }
+    const eta = tsEta(tau, p.height * p.runup), dt = tsLast == null ? 0 : Math.min(now - tsLast, .25) * p.speed; tsLast = now;
+    if (eta > 0) tsReach += boreSpeed() * dt;
+    const lv = sea0 + Math.max(eta, -3); water.setHeight(lv); water.setReach(tsReach); S.seaRise = lv - sea0;
     if (bReady && lv > maxLv + .2) { maxLv = lv; B.water(maxLv, true); } // 가장 높이 찼던 물 자국 · 잠긴 층 손상
   });
 
