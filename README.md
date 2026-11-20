@@ -32,7 +32,7 @@ URL로 조합을 바로 지정할 수 있습니다: `?terrain=red-canyon&sky=gol
 
 `data/catalog.json`에 목록이 있습니다.
 
-- **지형 15종** (`data/terrain/<id>.r16` 높이장 + `scenes/<id>.json/.geo.bin` 실제 메시 + `color/<id>.jpg` 지형 색)
+- **지형 15종** (`data/terrain/<id>.r16` 높이장 + `scenes/<id>.json/.geo.bin` 실제 메시 + `color/<id>.jpg` 지형 색). 건물·시추 시설·다리·부두·배 같은 인공 구조물은 빼고 자연 지형(산·바위·섬·빙하)과 그 아래 땅만 남겼습니다.
 - **하늘 15종** (`data/sky/<id>.jpg` 하늘 텍스처 + `js/atmosphere.js`의 `PRESETS` 조명·구름·안개)
 - **바다 15종** (`js/atmosphere.js`의 `WATER_LOOK` 물 맑기·흰 물마루·해저색 + 바다 색·거칠기)
 
